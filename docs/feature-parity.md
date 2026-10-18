@@ -17,8 +17,8 @@ The target is a native client for the user's existing Muse personal agent plus p
 | Agent file-context sharing | Explicit name/content consent and bounded reads | Developer-API runtime experiment only (16 KiB/read, 3 reads/turn); not connected to account-linked personal agent |
 | Create/edit/move/delete | Separate write/delete grants and exact preview/confirmation | Planned |
 | Calendar, reminders, contacts, notes, mail, messaging | Provider-specific read/write connectors and send confirmation | Planned |
-| Browser tabs and form filling | Optional extension/native-messaging bridge | Planned; sign-in browser automation is not an agent browser connector |
-| Screen context and desktop actions | ScreenCast/RemoteDesktop portals plus accessibility | Planned; no silent global-input fallback |
+| Browser tabs and form filling | Optional extension/native-messaging bridge | Still planned; OpenURI opens http(s) URLs through the portal handler (no tab control, no form filling); sign-in browser automation is not an agent browser connector |
+| Screen context and desktop actions | ScreenCast/RemoteDesktop portals plus accessibility | Screenshot via XDG portal (per-capture system consent, in-memory preview, Clear discards) plus portal OpenURI; offline/fake-bus tests + display smoke; live-portal run pending |
 | Voice, camera, photos, location | PipeWire and portals if present in frozen Mac baseline | Verify Mac scope; not implemented |
 | AppImage | Bundle app/our sidecars; use host Python, browser, desktop services | Packaging updated for second batch; earlier artifact launches via XWayland on KDE Wayland; new artifact/native Wayland need separate checks |
 
