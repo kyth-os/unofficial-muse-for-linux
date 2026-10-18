@@ -992,6 +992,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "muse-desktop"
+version = "0.1.0"
+
+[[package]]
 name = "muse-linux-core"
 version = "0.1.0"
 
@@ -1843,10 +1847,12 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 name = "unofficial-muse-for-linux"
 version = "0.1.0"
 dependencies = [
+ "gdk-pixbuf",
  "gtk4",
  "libc",
  "muse-account",
  "muse-agent-runtime",
+ "muse-desktop",
  "muse-linux-core",
  "muse-local-link",
  "muse-local-tools",

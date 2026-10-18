@@ -2,6 +2,7 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 mod account_login;
 mod account_ui;
+mod desktop_ui;
 mod local_host;
 mod mail_ui;
 use muse_agent_runtime::{AgentResponse, AgentSession, ToolPolicy};
@@ -230,6 +231,10 @@ fn build_ui(app: &gtk::Application) {
     mail_nav.set_tooltip_text(Some("Mail · generic IMAP reading & approval-gated sending"));
     mail_nav.add_css_class("rail-button");
     sidebar.append(&mail_nav);
+    let desktop_nav = gtk::Button::from_icon_name("video-display-symbolic");
+    desktop_nav.set_tooltip_text(Some("Desktop · portal screenshots & URL opening"));
+    desktop_nav.add_css_class("rail-button");
+    sidebar.append(&desktop_nav);
     let developer_nav = gtk::Button::from_icon_name("applications-engineering-symbolic");
     developer_nav.set_tooltip_text(Some("Developer experiment — separate paid API key"));
     developer_nav.add_css_class("rail-button");
@@ -273,6 +278,8 @@ fn build_ui(app: &gtk::Application) {
     stack.add_named(&host_page.root, Some("host"));
     let mail_page: mail_ui::MailPage = mail_ui::build();
     stack.add_named(&mail_page.root, Some("mail"));
+    let desktop_page: desktop_ui::DesktopPage = desktop_ui::build();
+    stack.add_named(&desktop_page.root, Some("desktop"));
     let cancel_login = Rc::clone(&account_page.cancel_login);
     let stop_host = host_page.shutdown.clone();
     window.connect_close_request(move |_| {
@@ -781,6 +788,7 @@ fn build_ui(app: &gtk::Application) {
         (&files_nav, "files"),
         (&host_nav, "host"),
         (&mail_nav, "mail"),
+        (&desktop_nav, "desktop"),
         (&developer_nav, "developer"),
     ];
     for (button, page) in navigation {
@@ -790,6 +798,7 @@ fn build_ui(app: &gtk::Application) {
         let files = files_nav.clone();
         let host = host_nav.clone();
         let mail = mail_nav.clone();
+        let desktop = desktop_nav.clone();
         let developer = developer_nav.clone();
         button.connect_clicked(move |_| {
             select_page(
@@ -800,6 +809,7 @@ fn build_ui(app: &gtk::Application) {
                     (&files, "files"),
                     (&host, "host"),
                     (&mail, "mail"),
+                    (&desktop, "desktop"),
                     (&developer, "developer"),
                 ],
                 page,
@@ -813,6 +823,7 @@ fn build_ui(app: &gtk::Application) {
     let files_for_open_files = files_nav.clone();
     let host_for_open_files = host_nav.clone();
     let mail_for_open_files = mail_nav.clone();
+    let desktop_for_open_files = desktop_nav.clone();
     let developer_for_open_files = developer_nav.clone();
     open_files.connect_clicked(move |_| {
         select_page(
@@ -823,6 +834,7 @@ fn build_ui(app: &gtk::Application) {
                 (&files_for_open_files, "files"),
                 (&host_for_open_files, "host"),
                 (&mail_for_open_files, "mail"),
+                (&desktop_for_open_files, "desktop"),
                 (&developer_for_open_files, "developer"),
             ],
             "files",
@@ -869,6 +881,7 @@ fn select_page(
         "files" => "Files",
         "host" => "Local host · grants & approvals",
         "mail" => "Mail · IMAP reading & approved sending",
+        "desktop" => "Desktop · portal screenshots & URL opening",
         "developer" => "Developer experiment",
         _ => "Unknown page",
     });
