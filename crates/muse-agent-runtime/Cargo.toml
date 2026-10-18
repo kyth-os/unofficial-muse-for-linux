@@ -1,0 +1,11 @@
+[package]
+name = "muse-agent-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Permission-scoped task and tool runtime for the Linux Muse agent port"
+
+[dependencies]
+muse-linux-core = { path = "../muse-linux-core" }
+muse-meta-api = { path = "../muse-meta-api" }
+serde_json = "1"

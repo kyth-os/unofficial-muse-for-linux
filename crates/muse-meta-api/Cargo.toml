@@ -1,0 +1,10 @@
+[package]
+name = "muse-meta-api"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Official Meta Model API adapter for the Linux Muse agent port"
+
+[dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls"] }
+serde_json = "1"

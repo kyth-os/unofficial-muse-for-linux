@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Muse for Linux
+GenericName=Assistant desktop client
+Comment=An independent Linux-native Muse client prototype
+Exec=unofficial-muse-for-linux
+Icon=unofficial-muse-for-linux
+Terminal=false
+Categories=Utility;
+StartupWMClass=org.kythos.UnofficialMuseForLinux

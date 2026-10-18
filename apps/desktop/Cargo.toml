@@ -1,0 +1,17 @@
+[package]
+name = "unofficial-muse-for-linux"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Linux-native desktop client and local capability host for Muse"
+default-run = "unofficial-muse-for-linux"
+
+[[bin]]
+name = "unofficial-muse-for-linux"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = "0.10.3"
+muse-agent-runtime = { path = "../../crates/muse-agent-runtime" }
+muse-linux-core = { path = "../../crates/muse-linux-core" }
+muse-meta-api = { path = "../../crates/muse-meta-api" }
