@@ -122,13 +122,26 @@ fn main() {
     app.run();
 }
 
+/// Default window size. Kept inside a 1366x768 laptop work area: a larger
+/// default opened partially off-screen and forced a maximize cycle.
+/// Bounds are enforced at compile time on every build, not just tests.
+const DEFAULT_WINDOW_WIDTH: i32 = 1100;
+const DEFAULT_WINDOW_HEIGHT: i32 = 700;
+const DEFAULT_WINDOW_SIZE_PIN: () = {
+    assert!(DEFAULT_WINDOW_WIDTH >= 900);
+    assert!(DEFAULT_WINDOW_WIDTH <= 1150);
+    assert!(DEFAULT_WINDOW_HEIGHT >= 600);
+    assert!(DEFAULT_WINDOW_HEIGHT <= 750);
+};
+
 fn build_ui(app: &gtk::Application) {
+    const _: () = DEFAULT_WINDOW_SIZE_PIN;
     install_dark_theme();
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Unofficial Muse for Linux")
-        .default_width(1240)
-        .default_height(820)
+        .default_width(DEFAULT_WINDOW_WIDTH)
+        .default_height(DEFAULT_WINDOW_HEIGHT)
         .build();
     window.add_css_class("dark-window");
 
