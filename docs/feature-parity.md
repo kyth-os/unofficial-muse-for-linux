@@ -16,7 +16,7 @@ The target is a native client for the user's existing Muse personal agent plus p
 | Filename search | Bounded recursive case-insensitive search, no symlink following | Implemented/tested; GUI end-to-end search still needs verification |
 | Agent file-context sharing | Explicit name/content consent and bounded reads | Developer-API runtime experiment only (16 KiB/read, 3 reads/turn); not connected to account-linked personal agent |
 | Create/edit/move/delete | Separate write/delete grants and exact preview/confirmation | Planned |
-| Calendar, reminders, contacts, notes, mail, messaging | Provider-specific read/write connectors and send confirmation | Planned |
+| Calendar, reminders, contacts, notes, mail, messaging | Provider-specific read/write connectors and send confirmation | CalDAV read + approval-gated create and IMAP read + approval-gated SMTP send implemented (offline tests, display smokes); live-provider runs pending; reminders/contacts/notes/messaging not started |
 | Browser tabs and form filling | Optional extension/native-messaging bridge | Still planned; OpenURI opens http(s) URLs through the portal handler (no tab control, no form filling); sign-in browser automation is not an agent browser connector |
 | Screen context and desktop actions | ScreenCast/RemoteDesktop portals plus accessibility | Screenshot via XDG portal (per-capture system consent, in-memory preview, Clear discards) plus portal OpenURI; offline/fake-bus tests + display smoke; live-portal run pending |
 | Voice, camera, photos, location | PipeWire and portals if present in frozen Mac baseline | Verify Mac scope; not implemented |
