@@ -1,5 +1,7 @@
 use gtk::prelude::*;
 use gtk4 as gtk;
+mod account_login;
+mod account_ui;
 use muse_agent_runtime::{AgentResponse, AgentSession, ToolPolicy};
 use muse_linux_core::filesystem::{FileEntry, FilesystemGrant};
 use muse_meta_api::MetaModelClient;
@@ -155,6 +157,10 @@ fn build_ui(app: &gtk::Application) {
     files_nav.set_tooltip_text(Some("Files"));
     files_nav.add_css_class("rail-button");
     sidebar.append(&files_nav);
+    let developer_nav = gtk::Button::from_icon_name("applications-engineering-symbolic");
+    developer_nav.set_tooltip_text(Some("Developer experiment — separate paid API key"));
+    developer_nav.add_css_class("rail-button");
+    sidebar.append(&developer_nav);
     let nav_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     nav_spacer.set_vexpand(true);
     sidebar.append(&nav_spacer);
@@ -165,22 +171,30 @@ fn build_ui(app: &gtk::Application) {
     main_column.set_vexpand(true);
     let topbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     topbar.add_css_class("topbar");
-    let page_title = gtk::Label::new(Some("Chats"));
+    let page_title = gtk::Label::new(Some("Muse account · Chats & tasks"));
     page_title.add_css_class("page-title");
     topbar.append(&page_title);
-    let service_status = gtk::Label::new(Some("Session-only • local files read-only"));
+    let service_status = gtk::Label::new(Some("Muse account disconnected • local files read-only"));
     service_status.add_css_class("status-chip");
     service_status.set_hexpand(true);
     service_status.set_halign(gtk::Align::End);
     topbar.append(&service_status);
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
-    settings_button.set_tooltip_text(Some("Connection and permissions"));
+    settings_button.set_tooltip_text(Some("Muse account connection and sign-in"));
     topbar.append(&settings_button);
     main_column.append(&topbar);
 
     let stack = gtk::Stack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
+    let account_page: account_ui::AccountPage = account_ui::build(&service_status);
+    stack.add_named(&account_page.root, Some("chats"));
+    let cancel_login = Rc::clone(&account_page.cancel_login);
+    window.connect_close_request(move |_| {
+        cancel_login();
+        gtk::glib::Propagation::Proceed
+    });
+    stack.set_visible_child_name("chats");
     let chat_page = gtk::Box::new(gtk::Orientation::Vertical, 14);
     chat_page.add_css_class("page-content");
 
@@ -189,7 +203,7 @@ fn build_ui(app: &gtk::Application) {
     assistant_identity.add_css_class("assistant-identity");
     let assistant_avatar = gtk::Label::new(Some("M"));
     assistant_avatar.add_css_class("assistant-avatar");
-    let assistant_name = gtk::Label::new(Some("Muse"));
+    let assistant_name = gtk::Label::new(Some("Developer experiment · Meta Model API"));
     assistant_name.add_css_class("assistant-name");
     assistant_identity.append(&assistant_avatar);
     assistant_identity.append(&assistant_name);
@@ -256,7 +270,7 @@ fn build_ui(app: &gtk::Application) {
     append_chat(
         &chat_history,
         ChatRole::Assistant,
-        "Welcome. Open Connection & permissions to set up a developer key. The key and chat stay in memory for this session.",
+        "Developer experiment only. This paid API-key conversation is separate from your personal Muse account and shared history. Use Chats in the sidebar for your existing Muse agent. The key and experimental chat stay in memory for this session.",
     );
     let chat_scroll = gtk::ScrolledWindow::builder()
         .hexpand(true)
@@ -280,14 +294,14 @@ fn build_ui(app: &gtk::Application) {
     prompt_row.append(&open_files);
     let prompt_entry = gtk::Entry::new();
     prompt_entry.set_hexpand(true);
-    prompt_entry.set_placeholder_text(Some("Message Muse…"));
+    prompt_entry.set_placeholder_text(Some("Developer experiment: prompt the Meta Model API…"));
     prompt_row.append(&prompt_entry);
     let send_prompt = gtk::Button::with_label("Send");
     send_prompt.add_css_class("suggested-action");
     prompt_row.append(&send_prompt);
     chat_page.append(&prompt_row);
 
-    stack.add_named(&chat_page, Some("chats"));
+    stack.add_named(&chat_page, Some("developer"));
     main_column.append(&stack);
     shell.append(&sidebar);
     shell.append(&main_column);
@@ -665,44 +679,45 @@ fn build_ui(app: &gtk::Application) {
 
     stack.add_named(&files_page, Some("files"));
 
-    let stack_for_chats = stack.clone();
-    let title_for_chats = page_title.clone();
-    let chats_for_chats = chats_nav.clone();
-    let files_for_chats = files_nav.clone();
-    chats_nav.connect_clicked(move |_| {
-        select_page(
-            &stack_for_chats,
-            &title_for_chats,
-            &chats_for_chats,
-            &files_for_chats,
-            "chats",
-        );
-    });
-
-    let stack_for_files = stack.clone();
-    let title_for_files = page_title.clone();
-    let chats_for_files = chats_nav.clone();
-    let files_for_files = files_nav.clone();
-    files_nav.connect_clicked(move |_| {
-        select_page(
-            &stack_for_files,
-            &title_for_files,
-            &chats_for_files,
-            &files_for_files,
-            "files",
-        );
-    });
+    let navigation = [
+        (&chats_nav, "chats"),
+        (&files_nav, "files"),
+        (&developer_nav, "developer"),
+    ];
+    for (button, page) in navigation {
+        let stack = stack.clone();
+        let title = page_title.clone();
+        let chats = chats_nav.clone();
+        let files = files_nav.clone();
+        let developer = developer_nav.clone();
+        button.connect_clicked(move |_| {
+            select_page(
+                &stack,
+                &title,
+                &[
+                    (&chats, "chats"),
+                    (&files, "files"),
+                    (&developer, "developer"),
+                ],
+                page,
+            );
+        });
+    }
 
     let stack_for_open_files = stack.clone();
     let title_for_open_files = page_title.clone();
     let chats_for_open_files = chats_nav.clone();
     let files_for_open_files = files_nav.clone();
+    let developer_for_open_files = developer_nav.clone();
     open_files.connect_clicked(move |_| {
         select_page(
             &stack_for_open_files,
             &title_for_open_files,
-            &chats_for_open_files,
-            &files_for_open_files,
+            &[
+                (&chats_for_open_files, "chats"),
+                (&files_for_open_files, "files"),
+                (&developer_for_open_files, "developer"),
+            ],
             "files",
         );
     });
@@ -711,13 +726,17 @@ fn build_ui(app: &gtk::Application) {
     let title_for_settings = page_title.clone();
     let chats_for_settings = chats_nav.clone();
     let files_for_settings = files_nav.clone();
-    let setup_for_settings = setup_expander.clone();
+    let developer_for_settings = developer_nav.clone();
+    let setup_for_settings = account_page.settings.clone();
     settings_button.connect_clicked(move |_| {
         select_page(
             &stack_for_settings,
             &title_for_settings,
-            &chats_for_settings,
-            &files_for_settings,
+            &[
+                (&chats_for_settings, "chats"),
+                (&files_for_settings, "files"),
+                (&developer_for_settings, "developer"),
+            ],
             "chats",
         );
         setup_for_settings.set_expanded(true);
@@ -730,23 +749,23 @@ fn build_ui(app: &gtk::Application) {
 fn select_page(
     stack: &gtk::Stack,
     title: &gtk::Label,
-    chats_nav: &gtk::Button,
-    files_nav: &gtk::Button,
+    navigation: &[(&gtk::Button, &str)],
     page: &str,
 ) {
-    let is_chats = page == "chats";
     stack.set_visible_child_name(page);
-    title.set_text(if is_chats { "Chats" } else { "Files" });
-    chats_nav.set_css_classes(if is_chats {
-        &["rail-button", "active"]
-    } else {
-        &["rail-button"]
+    title.set_text(match page {
+        "chats" => "Muse account · Chats & tasks",
+        "files" => "Files",
+        "developer" => "Developer experiment",
+        _ => "Unknown page",
     });
-    files_nav.set_css_classes(if is_chats {
-        &["rail-button"]
-    } else {
-        &["rail-button", "active"]
-    });
+    for (button, name) in navigation {
+        button.set_css_classes(if *name == page {
+            &["rail-button", "active"]
+        } else {
+            &["rail-button"]
+        });
+    }
 }
 
 fn append_chat(container: &gtk::Box, role: ChatRole, message: &str) {

@@ -15,3 +15,6 @@ gtk4 = "0.10.3"
 muse-agent-runtime = { path = "../../crates/muse-agent-runtime" }
 muse-linux-core = { path = "../../crates/muse-linux-core" }
 muse-meta-api = { path = "../../crates/muse-meta-api" }
+muse-account = { path = "../../crates/muse-account" }
+serde_json = "1"
+libc = "0.2"

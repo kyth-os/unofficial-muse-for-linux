@@ -3,3 +3,5 @@ target/
 *.AppImage
 dist/
 .AppDir/
+__pycache__/
+*.py[cod]

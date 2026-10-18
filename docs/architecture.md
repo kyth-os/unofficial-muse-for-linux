@@ -2,26 +2,46 @@
 
 ## Separation of concerns
 
-- `muse-linux-core`: permission-scoped filesystem operations and policy tests. It remains independent of the GUI and network stack.
-- `muse-meta-api`: experimental adapter for Meta’s documented developer Responses API. It is not Muse.ai account authentication and does not reach the user's existing personal agent or history.
-- `muse-agent-runtime`: bounded function-tool loop over typed read-only local tools for that experiment. It is not yet the local capability bridge for a signed-in Muse.ai session.
-- `apps/desktop`: native GTK4 dark shell with Chats/Files views; current assistant setup still exposes a session-only developer key and is not the intended Muse.ai sign-in/pairing flow.
-- Local connectors: narrow capabilities, each with its own grant and audit-friendly result. Never expose a general-purpose shell or unrestricted filesystem API to the assistant.
+- `muse-linux-core`: permission-scoped, read-only filesystem operations and policy tests; independent of GUI and network access.
+- `muse-account`: typed account/history/tasks/send operations with a bounded Python subprocess. Account construction alone does not access credentials or the network; operations are explicit.
+- `scripts/muse_account_bridge.py`: our allowlisted JSON sidecar over an explicitly selected external community Python environment. It imports the source checkout; no MCP server or raw API is exposed to the UI.
+- `scripts/muse_account_login.py`: explicit user-controlled official Muse browser sign-in using an isolated Chromium-compatible profile and a narrowly scoped app-owned session jar. A compatible browser is an external prerequisite; fresh live sign-in remains a separate validation gate.
+- `apps/desktop`: native GTK4 dark Chats/Files shell, account configuration and native shared history/task views. Network and subprocess work must not block GTK's main thread.
+- `muse-meta-api` and `muse-agent-runtime`: the separate experimental developer-key Model API and bounded read-only tool loop. These are not consumer Muse login or a local-host bridge for the account adapter.
+- Future local connectors: narrow typed capabilities with grants and auditable results, never an unrestricted shell or whole-home-directory API.
 
 ## Muse.ai account link and local-host bridge are core requirements
 
-The target is a Linux-native companion/local host for the user's existing Muse.ai personal agent. It must pair through a documented Muse account/device flow permitted for the intended distribution, preserve the same identity and task/chat continuity, and provide Linux filesystem, browser, screen, and app access through explicit Linux grants. The account link and local host bridge are both required parts of the product—not optional compatibility work.
+The goal is the user's existing Muse personal agent plus permissioned Linux capabilities—not a website wrapper, a separate model client, or a Mac relay. Account continuity and local-host integration are separate requirements. The second batch addresses the former through an **unsupported authenticated community adapter**; it does not establish Mac-style node/device registration, local-tool dispatch, or full parity.
 
-The current [Meta Model API](https://dev.meta.ai/docs/api-reference) adapter is a separate developer-key experiment; it must not be presented as the user's Muse.ai login or same-agent experience. Meta also publishes a [Linux Device SDK](https://github.com/facebookincubator/muse-gadget-sdk/tree/main/linux) that pairs a Linux gadget to a Muse account and lets Muse run commands and access files on the host. Its documentation and [token terms](https://gadgets.muse.ai/sdk-terms) explicitly limit it to personal, non-commercial use, say it is unsupported and may change or stop, and restrict publicly offered token-bearing devices. Whether a public AppImage that asks each user for their own token is permitted is unclear and needs Meta confirmation. It is a relevant account-linked Linux path to evaluate for a personal proof of concept, but it is a phone-paired gadget service, not automatically a Mac-style desktop client. Open [issue #154](https://github.com/facebookincubator/muse-gadget-sdk/issues/154) reports that app-to-device command dispatch is absent for at least one account; later reports say behavior may vary by account. Test the user's own account before treating pairing as functional. Confirm the authorized flow, scopes, terms, and UX before adopting it. Do not reuse browser cookies, private routes, hidden endpoints, or internal session data. If no permitted flow fits the project, treat account pairing as a P0 blocker rather than substituting the developer API.
+```text
+GTK -> muse-account -> our JSON sidecar -> selected Python environment
+                                       -> external pinned muse-mcp source
+                                       -> Muse account/personal-agent gateway
 
-Keep Muse account authentication separate from Linux OS permissions: Muse sign-in/device pairing authorizes the account; local portals/connectors authorize access to the Linux machine. Verify account identity, revocation, shared history/tasks, and per-action permission behavior end to end before claiming parity. [Muse Code](https://dev.meta.ai/docs/muse-code) and the [Muse Connector Platform](https://platform.muse.ai/docs) are not by themselves proof of a desktop-client pairing protocol.
+Files view -> muse-linux-core -> selected read-only folder
+```
 
-Any experimental developer-API adapter must be clearly labeled, replaceable, and kept out of the product's account-link path. The product flow must use documented Muse.ai account/device authorization and keep all credentials out of the repository and logs.
+The account interface is limited to connect, scoped history, scheduled-task/run reads, and sending a prompt. Internally, task routes are restricted to `tasks.list` (schedules) and `tasks.runs` (executions). Do not expose a general route method, account-backed remote filesystem, or local command execution. Selected local files are not automatically shared with the account-linked agent.
+
+Prompt dispatch may trigger the personal agent's existing remote capabilities. It is an explicit external action. Send once, then verify through scoped history: prompt persistence is not assistant completion. Uncertain outcomes must not cause automatic retry. Read operations, history scope, identity, and task shapes need real-account checks separate from offline tests.
+
+## Authentication and trust boundaries
+
+App credentials default to `${XDG_CONFIG_HOME:-$HOME/.config}/unofficial-muse-for-linux/account`. Existing `${XDG_CONFIG_HOME:-$HOME/.config}/muse-cli` credentials are used only after an explicit user choice. Account directories must be user-owned/private and jars regular private files; reject symlinks and insecure permissions rather than changing arbitrary paths. The browser helper captures only Muse `hatch_sess` into a mode-0600 jar; passwords and API keys never pass through app forms. This is permission-protected plaintext storage, not a keyring. Disconnect/local deletion is not proof of server-side revocation.
+
+Treat the selected interpreter, source checkout, dependencies, and browser as trusted local code running with the user's privileges; the subprocess is **not a sandbox**. Keep credentials out of argv, logs, crash reports, Rust values, and JSON results. Project typed response projection and fixed errors do not make arbitrary upstream payloads safe to log.
+
+The community gateway protocol is internal/unversioned and may change or stop working. Unsupported status is an explicit compatibility/security disclosure, not a reason to substitute the developer API and claim continuity. The first-party phone/BLE Linux gadget path is a different device-token protocol and is not integrated here. See [account integration](account-integration.md) for source/license provenance, setup, data flow, and limits.
 
 ## Linux desktop boundary
 
-Use XDG desktop portals for file selection, screen capture, and remote desktop/input where supported; use accessibility and app-specific provider APIs for semantic context. AppImage packages the program, not the user’s desktop session services. Handle missing portals or provider APIs as explicit capability gaps.
+Use XDG desktop portals for file selection, screen capture, and remote desktop/input where supported; use accessibility and provider-specific APIs for semantic context. Muse sign-in authorizes account access, not access to the Linux machine. Each future local action needs its own Linux permission, action-specific approval when sensitive, denial behavior, and verified side effects. Missing portals/providers must appear unavailable, not simulated.
+
+AppImage packages the program, not host desktop-session services or a Python/browser runtime. Current launch evidence is XWayland on KDE Wayland; native Wayland needs separate validation.
 
 ## Dependency and asset policy
 
-Implement the client from scratch. Do not copy Meta’s proprietary binaries, source, UI assets, hidden client tokens, or private service credentials into this repository. Retain the project’s GPL-3.0-only license and the non-affiliation notice.
+The AppImage contains the Rust application and our two sidecars under `usr/share/unofficial-muse-for-linux/account/`. The community source, `routes.json`, `desc*.bin`, Meta-extracted code/assets, Python venv, and all account state stay external. The installer fetches the reviewed community commit into a new per-user directory, never overwrites an existing tree, never runs as root, and performs no authentication.
+
+Keep this project's GPL-3.0-only license and non-affiliation notice. The external community repository declares MIT licensing and protocol material derived from the web client; preserve its provenance rather than relabeling it as ours. No proprietary app binaries/assets, shared hidden credentials, or credential-bearing distribution are included.

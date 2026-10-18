@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/muse-linux-core", "crates/muse-meta-api", "crates/muse-agent-runtime", "apps/desktop"]
+members = ["crates/muse-linux-core", "crates/muse-meta-api", "crates/muse-agent-runtime", "crates/muse-account", "apps/desktop"]

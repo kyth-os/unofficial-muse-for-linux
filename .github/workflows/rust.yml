@@ -17,14 +17,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install native GTK dependencies
-      run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev pkg-config
+      run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev pkg-config python3 xauth xvfb
     - name: Install formatting and lint tools
       run: rustup component add rustfmt clippy
     - name: Check formatting
       run: cargo fmt --all -- --check
+    - name: Check scripts and run offline account tests
+      run: ./scripts/test-account.sh
     - name: Build
       run: cargo build --workspace --locked --verbose
     - name: Run tests
       run: cargo test --workspace --locked --verbose
+    - name: Run native account GUI smoke test
+      env:
+        TMPDIR: ${{ runner.temp }}
+      run: xvfb-run -a cargo test -p unofficial-muse-for-linux native_account_page_consent_failure_and_disconnect_signal_smoke --locked -- --ignored --test-threads=1
     - name: Lint
       run: cargo clippy --workspace --all-targets --locked -- -D warnings

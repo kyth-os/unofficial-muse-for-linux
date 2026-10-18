@@ -35,13 +35,20 @@ fetch_pinned \
     "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/$GTK_PLUGIN_COMMIT/linuxdeploy-plugin-gtk.sh" \
     "$GTK_PLUGIN" "$GTK_PLUGIN_SHA256"
 
-cargo test --workspace
-cargo build --release -p unofficial-muse-for-linux
+cd "$ROOT"
+./scripts/test-account.sh
+cargo test --workspace --locked
+cargo build --release --locked -p unofficial-muse-for-linux
 
 rm -rf -- "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/metainfo"
+ACCOUNT_DIR="$APPDIR/usr/share/unofficial-muse-for-linux/account"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/metainfo" "$ACCOUNT_DIR"
 install -m 755 "$ROOT/target/release/unofficial-muse-for-linux" "$APPDIR/usr/bin/unofficial-muse-for-linux"
 install -m 644 "$ROOT/resources/unofficial-muse-for-linux.appdata.xml" "$APPDIR/usr/share/metainfo/unofficial-muse-for-linux.appdata.xml"
+# Bundle only this project's typed sidecars, never the external community
+# checkout, Meta-derived protocol assets, Python environment, or account state.
+install -m 644 "$ROOT/scripts/muse_account_bridge.py" "$ACCOUNT_DIR/muse_account_bridge.py"
+install -m 644 "$ROOT/scripts/muse_account_login.py" "$ACCOUNT_DIR/muse_account_login.py"
 
 shopt -s nullglob
 for previous in "$ROOT"/target/*.AppImage; do

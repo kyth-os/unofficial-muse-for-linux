@@ -1,32 +1,34 @@
-# Muse for Mac agent feature inventory and Linux port plan
+# Muse for Mac feature inventory and Linux port plan
 
-The target is a standalone Linux application that reproduces the Mac agent’s user-visible behavior with Linux-native desktop and service integrations. It does not require, control, or bridge to a Mac, and it does not wrap the Muse website. The [goal-ready full-port plan](full-port-goal.md) defines scope, sequencing, external compatibility questions, and acceptance tests.
+The target is a native client for the user's existing Muse personal agent plus permissioned Linux host capabilities. No Mac relay or embedded website is required. The [full-port goal](full-port-goal.md) defines the acceptance bar; [account integration](account-integration.md) describes the current unsupported community path.
 
-| Reference capability | Linux implementation direction | Status |
+**Status convention:** implemented means code exists; verified means a named test or manual check exercised it. Offline tests, authenticated existing-session probes, fresh browser sign-in, packaged GUI checks, and local-host dispatch are separate evidence categories. Do not infer one from another.
+
+| Reference capability | Linux implementation direction | Current scope / verification boundary |
 |---|---|---|
-| Same Muse.ai account, conversation, model response, and task continuity | Native client paired to the user's existing Muse agent; shared history/tasks and local host integration | Not implemented: current developer-key Responses API path is separate/session-only; no Muse account auth or device pairing |
-| Multi-step tool execution and progress | Typed tools, permission broker, visible progress, cancel/resume, and durable task state | Partial: bounded read-only file tool loop and progress; no plan UI, cancel/resume, or persistence |
-| Background tasks, goals, notifications, and memory | Durable scheduler/task store and user-visible controls | Not implemented; confirm Mac-app scope |
-| Folder listing and file reads | User-selected roots; canonical-path confinement; read-only grant first | Implemented locally (session-only; chooser, listing, and preview smoke-tested) |
-| Filename search | Bounded recursive case-insensitive search inside the granted root; omit symlinks | Implemented and tested; GUI end-to-end search still needs verification |
-| Agent file-context sharing | Separate filename/content consent; bound reads and clear prior context on permission reduction | Implemented in runtime; 16 KiB/read, 3 reads/turn; regression-tested |
-| Create, edit, move, and delete | Separate write/delete grants and per-operation confirmation | Planned |
-| Calendar and reminders | Adapter per available provider (e.g. desktop data service or CalDAV); no implicit database scraping | Planned |
-| Contacts | Provider adapter with explicit read/update scopes | Planned |
-| Notes | App/provider-specific adapters; no universal Linux notes API | Planned |
-| Email and messaging | Service/app-specific connectors with explicit send confirmation and privacy filters | Planned |
-| Browser tabs and form filling | Optional browser extension/native-messaging bridge | Planned |
-| Screen context and desktop actions | XDG ScreenCast/RemoteDesktop portals plus accessibility APIs; require the desktop’s consent flow | Planned |
-| Voice input, camera, photos, location | PipeWire and desktop portals, if confirmed in the Mac-app baseline | Verify Mac-app scope |
-| Muse.ai account sign-in and local host pairing | Account-linked Linux host plus Linux-native capability bridge | Not implemented; public Linux Device SDK is a personal, unsupported gadget path; distribution terms and desktop parity unresolved |
-| AppImage | Bundle the app; use host desktop portals and session services for system integrations | x86_64 build works; launch-smoke-tested via XWayland on KDE Wayland |
+| Same-account conversation and history | Typed community account adapter, native thread/history views and prompt dispatch | Second batch implementation; unsupported internal protocol, external dependency and explicit user session; integrated live/GUI evidence recorded separately |
+| Shared scheduled tasks and execution history | Native read-only schedule/run lists | Second batch implementation; `tasks.list` is schedules and `tasks.runs` is executions; no task creation/edit/cancel or Linux scheduler |
+| Muse sign-in | User-controlled isolated official browser login, or explicit existing local session | Helper implementation and offline tests; requires compatible Chromium; fresh live authentication/revocation not proven |
+| Device/node registration and Linux local-tool dispatch | Separate account-linked local-host protocol and permission broker | Not implemented/proven; account link alone does not pair this machine as a tool host |
+| Multi-step execution, streaming, plans, approvals, cancel/resume | Typed tools, visible progress, durable state and action-specific consent | Not complete; old bounded read-only developer-API tool loop remains a separate experiment |
+| Background tasks, notifications, goals and memory | Durable Linux task store and user-visible controls | Not implemented; reading backend schedules is not Linux background execution |
+| Folder listing and file reads | User-selected canonical root; bounded read-only preview | Implemented, session-only; earlier chooser/list/preview smoke checks via XWayland |
+| Filename search | Bounded recursive case-insensitive search, no symlink following | Implemented/tested; GUI end-to-end search still needs verification |
+| Agent file-context sharing | Explicit name/content consent and bounded reads | Developer-API runtime experiment only (16 KiB/read, 3 reads/turn); not connected to account-linked personal agent |
+| Create/edit/move/delete | Separate write/delete grants and exact preview/confirmation | Planned |
+| Calendar, reminders, contacts, notes, mail, messaging | Provider-specific read/write connectors and send confirmation | Planned |
+| Browser tabs and form filling | Optional extension/native-messaging bridge | Planned; sign-in browser automation is not an agent browser connector |
+| Screen context and desktop actions | ScreenCast/RemoteDesktop portals plus accessibility | Planned; no silent global-input fallback |
+| Voice, camera, photos, location | PipeWire and portals if present in frozen Mac baseline | Verify Mac scope; not implemented |
+| AppImage | Bundle app/our sidecars; use host Python, browser, desktop services | Packaging updated for second batch; earlier artifact launches via XWayland on KDE Wayland; new artifact/native Wayland need separate checks |
 
 ## Safety rules
 
-1. A folder grant is scoped to the exact canonical directory selected by the user. Relative paths may not escape that root.
-2. The initial filesystem implementation is read-only. Writes, moves, and deletes require distinct grants and an explicit confirmation surface.
-3. Screen capture and remote input must go through the desktop’s portal/session mechanism; no silent global-input fallback.
-4. Sending messages, emails, or other externally visible actions requires confirmation.
-5. Credentials and account tokens must never be committed, logged, or persisted in plaintext.
-6. Unsupported app/provider integrations must be shown as unavailable, not simulated as working.
-7. Paid model requests, filename sharing, and file-content sharing are separate opt-ins; each defaults off.
+1. A folder grant covers only the selected canonical directory. No path escape or unrestricted home/shell access.
+2. Local files remain read-only and separate from account linkage. Writes/moves/deletes need distinct grants and confirmations.
+3. Screen/input access must use the desktop consent mechanism; unavailable APIs remain unavailable.
+4. Sending a prompt is an explicit external action and may trigger the existing agent's remote capabilities. Do not auto-retry an uncertain dispatch; history confirmation proves prompt persistence, not task completion.
+5. Never commit or log credentials. The current session jar is plaintext protected by private ownership/permissions (directory 0700, file 0600), not encrypted storage; keyring integration remains future work.
+6. Existing CLI sessions are opt-in, not silently discovered/reused. Reject symlinks and insecure credentials without changing arbitrary files.
+7. Keep unsupported protocol, source/license provenance, dependency trust, and service drift visible. Do not bundle external Meta-derived route/descriptors or a credential-bearing environment.
+8. Future local sends/shares/purchases/deletes require fresh detail-specific approval and read-back verification. Account sign-in is not a Linux permission grant.

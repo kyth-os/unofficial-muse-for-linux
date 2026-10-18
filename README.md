@@ -1,34 +1,39 @@
 # Unofficial Muse for Linux
 
-An open-source, **Linux-native companion/local host for the user's existing Muse.ai personal agent**, intended to behave like Muse for Mac on Linux. This project is independent and is not affiliated with, endorsed by, or supported by Meta Platforms, Inc. “Muse” and related marks belong to their respective owners.
-
-This is not a wrapper that opens Muse.ai or a separate Muse-like model client. The target is to pair an existing Muse.ai account with a native Linux shell and permissioned local capabilities. Meta's Linux Device SDK offers a personal gadget-pairing path, but it is unsupported, its terms restrict publicly offered token-bearing devices, whether a user-token AppImage is permitted is unclear, and an open issue reports app-to-device command dispatch problems; this app does not integrate it yet.
+A Linux-native companion for the user's existing Muse personal agent. Independent, open source, and **not affiliated with, endorsed by, or supported by Meta**. “Muse” and related marks belong to their respective owners.
 
 ## Status
 
-Early development; **not a usable Muse.ai Linux companion or feature-complete port**. The desktop has a first-pass dark, chat-first GTK layout with Chats/Files views and a collapsible permissions panel. The current assistant is an **experimental, separate developer-API path** that requires a developer key; it does not sign in to the user's Muse.ai account, reach their existing agent, or share chat/task history, so it does not meet the product objective. It uses session-only state and local mocks for tests; no live API request was made. Filesystem access remains read-only and restricted to a user-granted folder. The rebuilt AppImage launches via XWayland on KDE; dark UI and view navigation were manually checked. Muse.ai account/device pairing, same-agent continuity, app write actions, browser/app integrations, and native Wayland support remain unimplemented or unverified. See the [full-port plan](docs/full-port-goal.md) and [account-link architecture](docs/architecture.md#museai-account-link-and-local-host-bridge-are-core-requirements). No Meta app code, assets, or credentials are included here.
+Early development, **not a feature-complete Muse-for-Mac port**. The GTK4 dark desktop has Chats/Files views, session-only read-only folder grants, browsing, bounded text preview, and filename search. The account-linked second batch adds native shared chat/history, prompt dispatch, and scheduled-task/run lists through an explicitly selected **unsupported community adapter** and the user's own Muse session.
 
-## Implemented and planned Linux integrations
+Account linkage is **not Mac-style device/node registration or local-capability dispatch**. Connecting an account gives the agent no Linux shell, screen, browser, or filesystem access. Local files stay read-only and separate. Fresh browser authentication and same-agent local-host dispatch are not proven; offline tests or an existing-session backend probe do not establish either. Streaming, approvals/cancel/resume, task editing, file writes, desktop connectors, and durable Linux background work remain incomplete. Earlier AppImage launch checks used KDE Wayland through XWayland, not native Wayland.
 
-- Session-only, read-only folder grants, browsing, bounded text preview, and bounded recursive filename search in core/UI code. The search UI still needs an end-to-end GUI check; write/delete flows are not implemented.
-- Experimental Meta Model API conversation and a bounded, read-only filesystem tool loop; this is separate from Muse.ai account sign-in and is not the target product auth path.
-- Desktop and browser context through Linux accessibility/portal APIs and an optional browser extension (planned).
-- Per-provider calendar, contacts, reminders, notes, mail, and messaging connectors; Linux has no single API that covers every desktop app (planned).
-- Explicit user consent for screen capture, input, and external actions (planned).
-- Muse.ai account sign-in, pairing, and shared history/tasks are core requirements but are not implemented; the developer API path does not satisfy them.
-- x86_64 AppImage packaging builds, but the current artifact is not user-ready; see [build instructions](docs/building.md).
+The app can launch an isolated, user-controlled official Muse browser login when a compatible Chromium browser is available, or explicitly use an existing local Muse session. It never asks for a password or developer API key for the account path. The separate developer-key Model API crates remain experiments, not Muse account sign-in.
+
+## Account setup
+
+```sh
+# Run as your regular user; requires Git and Python 3.10+ with venv.
+./scripts/setup-account-bridge.sh
+```
+
+The installer pins external community source into `~/.local/share/unofficial-muse-for-linux/account-bridge` (or the XDG data home) and creates its own Python environment. Select the printed `.venv/bin/python` in the app. It refuses existing destinations, never reads credentials, and never runs as root. The AppImage bundles only **our sidecars**, not the external checkout, Meta-derived protocol assets, Python environment, or account data.
+
+See [executed verification and current limits](docs/account-verification.md). See [account integration](docs/account-integration.md) for the source pin, sign-in/session choices, security boundaries, protocol-drift disclosure, and verification limits. A session jar is a private plaintext credential, not encrypted storage.
 
 ## Development
 
-The Rust workspace separates `muse-linux-core` (confined local filesystem access), `muse-meta-api` (the optional Meta Model API adapter), `muse-agent-runtime` (bounded read-only tool execution), and the native GTK4 app in `apps/desktop`.
-
 ```sh
-cargo test --workspace
+./scripts/test-account.sh
+cargo fmt --all -- --check
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run -p unofficial-muse-for-linux
 ```
 
-Build requirements and the pinned AppImage packaging flow are documented in [docs/building.md](docs/building.md).
+The workspace separates filesystem policy (`muse-linux-core`), the account subprocess adapter (`muse-account`), the experimental developer API/runtime crates, and the native app. See [building](docs/building.md), [architecture](docs/architecture.md), [feature parity](docs/feature-parity.md), and the [full-port goal](docs/full-port-goal.md).
 
 ## License
 
-GPL-3.0-only. See [LICENSE](LICENSE).
+GPL-3.0-only. See [LICENSE](LICENSE). The separately installed community dependency declares MIT licensing; its source and provenance stay external to this repository and AppImage.

@@ -930,6 +930,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "muse-account"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "muse-agent-runtime"
 version = "0.1.0"
 dependencies = [
@@ -1332,6 +1341,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1685,9 +1695,12 @@ name = "unofficial-muse-for-linux"
 version = "0.1.0"
 dependencies = [
  "gtk4",
+ "libc",
+ "muse-account",
  "muse-agent-runtime",
  "muse-linux-core",
  "muse-meta-api",
+ "serde_json",
 ]
 
 [[package]]
