@@ -1,0 +1,13 @@
+[package]
+name = "muse-calendar"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Generic CalDAV read + approval-gated event-create connector (no OAuth, no UI)"
+
+[dependencies]
+# Reuses the exact transport stack already in the tree (muse-meta-api):
+# sync blocking client + rustls. No new transport crate.
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+
+[dev-dependencies]
