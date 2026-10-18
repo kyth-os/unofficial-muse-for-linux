@@ -187,6 +187,8 @@ fn build_ui(app: &gtk::Application) {
     let stack = gtk::Stack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
+    stack.set_vhomogeneous(false);
+    stack.set_hhomogeneous(false);
     let account_page: account_ui::AccountPage = account_ui::build(&service_status);
     stack.add_named(&account_page.root, Some("chats"));
     let cancel_login = Rc::clone(&account_page.cancel_login);
@@ -265,8 +267,7 @@ fn build_ui(app: &gtk::Application) {
     chat_page.append(&setup_expander);
 
     let chat_history = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    chat_history.set_vexpand(true);
-    chat_history.set_valign(gtk::Align::End);
+    chat_history.set_valign(gtk::Align::Start);
     append_chat(
         &chat_history,
         ChatRole::Assistant,
@@ -275,7 +276,7 @@ fn build_ui(app: &gtk::Application) {
     let chat_scroll = gtk::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
-        .min_content_height(320)
+        .min_content_height(160)
         .build();
     chat_scroll.add_css_class("chat-scroll");
     chat_scroll.set_child(Some(&chat_history));

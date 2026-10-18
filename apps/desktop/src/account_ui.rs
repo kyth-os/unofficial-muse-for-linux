@@ -138,6 +138,24 @@ impl<A, H, T> Controller<A, H, T> {
         Some(ticket)
     }
 
+    /// Explains a refused send so the UI never fails silently. Every
+    /// `begin_send` refusal maps to one of these actionable notices.
+    fn describe_send_block(&self, text: &str) -> &'static str {
+        if self.account.is_none() {
+            return "Not connected. Connect your Muse session before sending.";
+        }
+        if self.busy.is_some() {
+            return "A request is already running. Wait for it to finish before sending.";
+        }
+        if self.pending_send.is_some() {
+            return "A previous send is uncertain. Check its original shared history, then allow another send.";
+        }
+        if text.trim().is_empty() {
+            return "Enter a message before sending.";
+        }
+        "Send is not ready. Wait for the current request to finish, then try again."
+    }
+
     fn finish_send(&mut self, ticket: &Ticket, outcome: SendOutcome) -> bool {
         if !self.accept(ticket) {
             return false;
@@ -876,13 +894,22 @@ mod native {
 
         fn send_message(self: &Rc<Self>) {
             let Some(client) = self.client.borrow().clone() else {
+                self.state.borrow_mut().send_notice =
+                    "Not connected. Connect your Muse session before sending.".into();
+                self.render();
                 return;
             };
             let Some(identity) = self.expected_identity() else {
+                self.state.borrow_mut().send_notice =
+                    "Not connected. Connect your Muse session before sending.".into();
+                self.render();
                 return;
             };
             let text = self.prompt.text().to_string();
             let Some(ticket) = self.state.borrow_mut().begin_send(&text) else {
+                let reason = self.state.borrow().describe_send_block(&text);
+                self.state.borrow_mut().send_notice = reason.into();
+                self.render();
                 return;
             };
             let request = ticket.clone();
@@ -1451,6 +1478,30 @@ mod tests {
         assert!(state.send_notice.contains("deadline exceeded"));
         state.acknowledge_send();
         assert!(state.begin_send("a deliberate new message").is_some());
+    }
+
+    #[test]
+    fn blocked_send_explains_why_instead_of_silently_doing_nothing() {
+        // Regression for the user-visible "chat doesn't work" report: every
+        // begin_send refusal must map to an actionable notice, never silence.
+        let mut disconnected = State::default();
+        assert!(disconnected.begin_send("hello").is_none());
+        assert!(
+            disconnected
+                .describe_send_block("hello")
+                .contains("Connect")
+        );
+        let mut ready = connected();
+        assert!(ready.begin_send("   ").is_none());
+        assert!(ready.describe_send_block("   ").contains("Enter"));
+        let _busy = ready.begin_send("first").unwrap();
+        assert!(ready.describe_send_block("second").contains("already"));
+        ready.finish_send(&_busy, SendOutcome::Uncertain("deadline exceeded".into()));
+        assert!(
+            ready
+                .describe_send_block("second")
+                .contains("allow another send")
+        );
     }
 
     #[test]

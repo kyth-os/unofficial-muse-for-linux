@@ -49,6 +49,7 @@ install -m 644 "$ROOT/resources/unofficial-muse-for-linux.appdata.xml" "$APPDIR/
 # checkout, Meta-derived protocol assets, Python environment, or account state.
 install -m 644 "$ROOT/scripts/muse_account_bridge.py" "$ACCOUNT_DIR/muse_account_bridge.py"
 install -m 644 "$ROOT/scripts/muse_account_login.py" "$ACCOUNT_DIR/muse_account_login.py"
+install -m 644 "$ROOT/scripts/muse_local_host.py" "$ACCOUNT_DIR/muse_local_host.py"
 
 shopt -s nullglob
 for previous in "$ROOT"/target/*.AppImage; do

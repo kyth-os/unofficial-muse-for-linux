@@ -17,13 +17,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install native GTK dependencies
-      run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev pkg-config python3 xauth xvfb
+      run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev pkg-config python3 python3-venv xauth xvfb
     - name: Install formatting and lint tools
       run: rustup component add rustfmt clippy
     - name: Check formatting
       run: cargo fmt --all -- --check
-    - name: Check scripts and run offline account tests
-      run: ./scripts/test-account.sh
+    - name: Install pinned test-only community runtime
+      run: ./scripts/setup-account-bridge.sh --prefix "$HOME/.local/share/muse-ci-account-bridge"
+    - name: Check scripts and run all offline account/host tests (no skips)
+      run: MUSE_ACCOUNT_TEST_PYTHON="$HOME/.local/share/muse-ci-account-bridge/.venv/bin/python" ./scripts/test-account.sh
     - name: Build
       run: cargo build --workspace --locked --verbose
     - name: Run tests

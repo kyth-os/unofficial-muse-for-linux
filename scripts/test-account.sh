@@ -18,4 +18,18 @@ print(f"Python syntax checked: {len(scripts)} files")
 PY
 # Also parse the installer's embedded Python, without installing anything.
 PATH="/usr/bin:/bin:$PATH" bash "$ROOT/scripts/setup-account-bridge.sh" --help >/dev/null
-/usr/bin/python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+# Wire-contract tests use the selected external runtime's real protobuf classes,
+# but fake all gateway IO. Nothing authenticates or reads an account session.
+TEST_PYTHON="${MUSE_ACCOUNT_TEST_PYTHON:-/usr/bin/python3}"
+"$TEST_PYTHON" -I - <<'PY'
+import sys
+import unittest
+
+suite = unittest.defaultTestLoader.discover("scripts/tests", pattern="test_*.py")
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+if result.skipped:
+    print("Full offline gate rejects skipped tests. Install the pinned bridge with "
+          "scripts/setup-account-bridge.sh and set MUSE_ACCOUNT_TEST_PYTHON to its "
+          "absolute .venv/bin/python path.", file=sys.stderr)
+sys.exit(0 if result.wasSuccessful() and not result.skipped else 1)
+PY
