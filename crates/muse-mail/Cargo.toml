@@ -1,0 +1,9 @@
+[package]
+name = "muse-mail"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Generic IMAP-read + approval-gated SMTP-send mail connector (no OAuth, no persistence)"
+
+[dependencies]
+native-tls = "0.2"
