@@ -1033,6 +1033,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "muse-tasks"
+version = "0.1.0"
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1858,6 +1862,7 @@ dependencies = [
  "muse-local-tools",
  "muse-mail",
  "muse-meta-api",
+ "muse-tasks",
  "serde_json",
 ]
 

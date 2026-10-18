@@ -20,6 +20,7 @@ muse-local-tools = { path = "../../crates/muse-local-tools" }
 muse-local-link = { path = "../../crates/muse-local-link" }
 muse-mail = { path = "../../crates/muse-mail" }
 muse-desktop = { path = "../../crates/muse-desktop" }
+muse-tasks = { path = "../../crates/muse-tasks" }
 gdk-pixbuf = "0.21"
 serde_json = "1"
 libc = "0.2"
