@@ -46,40 +46,88 @@ fn bubble_alignment(role: ChatRole) -> BubbleAlignment {
 
 const DARK_THEME_CSS: &str = r#"
 window, .app-shell { background-color: #111318; color: #e9ebf0; }
+window.dark-window { background-color: #111318; }
+scrolledwindow viewport { background-color: transparent; }
 .navigation-rail { background-color: #151820; border-right: 1px solid #292d37; padding: 14px 10px; }
 .brand-mark { background-color: #2867c7; color: #ffffff; border-radius: 16px; font-weight: 700; min-width: 42px; min-height: 42px; }
-.rail-button { min-width: 44px; min-height: 44px; padding: 0; border-radius: 14px; background: transparent; color: #b5bac6; }
+.rail-button { min-width: 44px; min-height: 44px; padding: 0; border-radius: 22px; background: transparent; color: #b5bac6; border-color: transparent; transition: background-color 120ms ease-in-out; }
 .rail-button:hover { background-color: #242833; color: #ffffff; }
 .rail-button.active { background-color: #26344a; color: #8fbdff; }
+.rail-button:focus { outline-width: 2px; outline-style: solid; outline-color: #3f7ad1; outline-offset: 1px; }
 .main-column { background-color: #111318; }
 .topbar { padding: 12px 20px; border-bottom: 1px solid #292d37; }
+.topbar-button { min-width: 36px; min-height: 36px; padding: 0; border-radius: 18px; }
 .page-title { background-color: #1d2028; border-radius: 20px; padding: 8px 14px; font-weight: 600; }
 .status-chip { color: #aeb5c2; background-color: #1b1e25; border: 1px solid #2b303b; border-radius: 14px; padding: 6px 10px; }
 .page-content { padding: 18px 24px; }
+.chat-column { }
+.chat-scroll { background: transparent; }
 .assistant-identity { padding: 0 0 6px; }
 .assistant-avatar { background-color: #303947; color: #dbe9ff; border-radius: 20px; min-width: 40px; min-height: 40px; font-weight: 700; }
+.message-avatar { background-color: #303947; color: #dbe9ff; border-radius: 16px; min-width: 32px; min-height: 32px; font-weight: 700; margin-top: 2px; }
 .assistant-name { font-weight: 600; }
+.message-meta { color: #8b91a0; font-size: smaller; padding: 2px 6px; }
+.day-divider { color: #8b91a0; font-size: smaller; padding: 8px 0 2px; }
+.section-heading { font-weight: 700; color: #dfe3ea; }
 .settings-disclosure { background-color: #191c23; border: 1px solid #292d37; border-radius: 14px; padding: 10px 14px; }
 .settings-content { padding: 10px 2px 4px; }
-.chat-bubble { padding: 12px 16px; border-radius: 20px; }
+.toolbar { }
+.chat-bubble { padding: 12px 16px; border-radius: 16px; font-size: 14px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
 .chat-bubble.user { background-color: #173d67; color: #edf5ff; }
 .chat-bubble.assistant { background-color: #222630; color: #edf0f5; }
 .chat-bubble.notice { background-color: #352d1d; color: #f4d99b; }
 .chat-status { color: #aeb5c2; padding: 2px 6px; }
-.composer { background-color: #1c2028; border: 1px solid #303541; border-radius: 22px; padding: 8px; }
+.composer { background-color: #1c2028; border: 1px solid #303541; border-radius: 26px; padding: 8px 8px 8px 14px; }
+.composer:focus-within { border-color: #3f7ad1; }
 .composer entry { background: transparent; border: 0; box-shadow: none; }
+.composer button.suggested-action { border-radius: 20px; padding: 8px 18px; font-weight: 600; }
 entry, searchentry, textview { color: #edf0f5; background-color: #191c23; border: 1px solid #303541; border-radius: 12px; }
 button { color: #e9ebf0; background-color: #242832; border: 1px solid #303541; border-radius: 12px; padding: 8px 12px; }
 button:hover { background-color: #303541; }
 button.suggested-action { color: #ffffff; background-color: #2867c7; border-color: #2867c7; }
 button.suggested-action:hover { background-color: #3478dc; }
+button.destructive-action { color: #ffb4ab; background-color: #3a2226; border-color: #5c2f35; }
+button.destructive-action:hover { background-color: #4a2b30; }
 .dim-label { color: #aeb5c2; }
-.card { color: #c6cad3; background-color: #1b1e25; border: 1px solid #292d37; border-radius: 12px; padding: 12px; }
-checkbutton { color: #d7dae1; }
+notebook header { background-color: #111318; border-bottom: 1px solid #292d37; }
+notebook tab { color: #aeb5c2; background-color: transparent; border-radius: 10px; padding: 8px 12px; }
+notebook tab:checked { color: #edf0f5; background-color: #222630; }
+notebook stack { background-color: #111318; }
+combobox box, combobox cellview { color: #edf0f5; }
+popover contents { background-color: #1b1e25; }
+popover modelbutton { color: #e9ebf0; }
+popover modelbutton:hover { background-color: #242832; }
+list row { color: #e9ebf0; }
+list row:selected { background-color: #26344a; }
+.card { color: #c6cad3; background-color: #1b1e25; border: 1px solid #292d37; border-radius: 12px; padding: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); }
+.approval-card { border-left: 3px solid #c98a2b; }
+.approval-icon { color: #d8b25c; font-weight: 700; }
+.approval-heading { font-weight: 700; color: #e9ebf0; }
+.approval-details { background-color: #14161c; border: 1px solid #2b303b; border-radius: 10px; padding: 8px; }
+.approval-details textview { background: transparent; border: 0; }
+.approval-scroll { }
+.approval-countdown { color: #d8b25c; }
+.approval-actions { }
+.file-row { border-radius: 10px; }
+notebook { background-color: transparent; }
+notebook > header { background-color: transparent; border-bottom: 1px solid #292d37; padding: 4px; }
+notebook > header > tabs > tab { background-color: transparent; color: #aeb5c2; border-radius: 12px; padding: 8px 14px; border: 1px solid transparent; }
+notebook > header > tabs > tab:hover { background-color: #1d2129; color: #e9ebf0; }
+notebook > header > tabs > tab:checked { background-color: #26344a; color: #8fbdff; border-color: #31445f; }
+notebook > stack { background-color: transparent; padding-top: 12px; }
+scrollbar slider { background-color: #333945; border-radius: 8px; }
+tooltip { background-color: #242832; color: #e9ebf0; border: 1px solid #3a4050; border-radius: 8px; padding: 6px 10px; }
+checkbutton { color: #d7dae1; padding: 2px; }
 "#;
 
 fn install_dark_theme() {
     if let Some(display) = gtk::gdk::Display::default() {
+        // Unstyled widgets (notebook tabs, combo popups, menus) must also
+        // default to the dark variant: without a settings daemon they would
+        // render light-on-dark, e.g. white strips behind button rows.
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_application_prefer_dark_theme(true);
+        }
         let provider = gtk::CssProvider::new();
         provider.load_from_data(DARK_THEME_CSS);
         gtk::style_context_add_provider_for_display(
@@ -201,6 +249,7 @@ fn build_ui(app: &gtk::Application) {
     topbar.append(&service_status);
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Muse account connection and sign-in"));
+    settings_button.add_css_class("topbar-button");
     topbar.append(&settings_button);
     main_column.append(&topbar);
 
@@ -228,6 +277,15 @@ fn build_ui(app: &gtk::Application) {
     let chat_page = gtk::Box::new(gtk::Orientation::Vertical, 14);
     chat_page.add_css_class("page-content");
 
+    // Mac-style centered reading column: conversation content clamps to ~640px
+    // so bubbles keep messenger rhythm on wide windows instead of stretching
+    // edge to edge. Setup stays full width above it.
+    let chat_column = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    chat_column.add_css_class("chat-column");
+    chat_column.set_halign(gtk::Align::Center);
+    chat_column.set_vexpand(true);
+    chat_column.set_size_request(640, -1);
+
     let assistant_identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
     assistant_identity.set_halign(gtk::Align::Center);
     assistant_identity.add_css_class("assistant-identity");
@@ -237,7 +295,7 @@ fn build_ui(app: &gtk::Application) {
     assistant_name.add_css_class("assistant-name");
     assistant_identity.append(&assistant_avatar);
     assistant_identity.append(&assistant_name);
-    chat_page.append(&assistant_identity);
+    chat_column.append(&assistant_identity);
 
     let setup_expander = gtk::Expander::new(Some("Connection & permissions"));
     setup_expander.add_css_class("settings-disclosure");
@@ -294,8 +352,9 @@ fn build_ui(app: &gtk::Application) {
     setup_expander.set_child(Some(&setup_content));
     chat_page.append(&setup_expander);
 
-    let chat_history = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let chat_history = gtk::Box::new(gtk::Orientation::Vertical, 10);
     chat_history.set_valign(gtk::Align::Start);
+    append_day_divider(&chat_history);
     append_chat(
         &chat_history,
         ChatRole::Assistant,
@@ -308,13 +367,13 @@ fn build_ui(app: &gtk::Application) {
         .build();
     chat_scroll.add_css_class("chat-scroll");
     chat_scroll.set_child(Some(&chat_history));
-    chat_page.append(&chat_scroll);
+    chat_column.append(&chat_scroll);
 
     let chat_status = gtk::Label::new(Some("No API key is active."));
     chat_status.set_xalign(0.0);
     chat_status.set_wrap(true);
     chat_status.add_css_class("chat-status");
-    chat_page.append(&chat_status);
+    chat_column.append(&chat_status);
 
     let prompt_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     prompt_row.add_css_class("composer");
@@ -328,7 +387,8 @@ fn build_ui(app: &gtk::Application) {
     let send_prompt = gtk::Button::with_label("Send");
     send_prompt.add_css_class("suggested-action");
     prompt_row.append(&send_prompt);
-    chat_page.append(&prompt_row);
+    chat_column.append(&prompt_row);
+    chat_page.append(&chat_column);
 
     stack.add_named(&chat_page, Some("developer"));
     main_column.append(&stack);
@@ -541,6 +601,7 @@ fn build_ui(app: &gtk::Application) {
     files_page.append(&files_explanation);
 
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    toolbar.add_css_class("toolbar");
     let choose_folder = gtk::Button::with_label("Grant read access to a folder…");
     choose_folder.add_css_class("suggested-action");
     let location = gtk::Label::new(Some("No folder granted"));
@@ -805,15 +866,40 @@ fn select_page(
     }
 }
 
+fn append_day_divider(container: &gtk::Box) {
+    let text = gtk::glib::DateTime::now_local()
+        .and_then(|now| now.format("%A, %B %-d"))
+        .map(|dated| dated.to_string())
+        .unwrap_or_else(|_| "Today".into());
+    let divider = gtk::Label::new(Some(&text));
+    divider.set_halign(gtk::Align::Center);
+    divider.add_css_class("day-divider");
+    container.append(&divider);
+}
+
+fn current_timestamp() -> String {
+    gtk::glib::DateTime::now_local()
+        .and_then(|now| now.format("%H:%M"))
+        .map(|stamped| stamped.to_string())
+        .unwrap_or_default()
+}
+
 fn append_chat(container: &gtk::Box, role: ChatRole, message: &str) {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_hexpand(true);
     row.set_margin_start(12);
     row.set_margin_end(12);
-    row.set_margin_top(4);
-    row.set_margin_bottom(4);
+    row.set_margin_top(6);
+    row.set_margin_bottom(6);
 
-    let bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    if role == ChatRole::Assistant {
+        let avatar = gtk::Label::new(Some("M"));
+        avatar.add_css_class("message-avatar");
+        avatar.set_valign(gtk::Align::Start);
+        row.append(&avatar);
+    }
+
+    let bubble = gtk::Box::new(gtk::Orientation::Vertical, 2);
     bubble.set_halign(match bubble_alignment(role) {
         BubbleAlignment::Start => gtk::Align::Start,
         BubbleAlignment::End => gtk::Align::End,
@@ -830,6 +916,14 @@ fn append_chat(container: &gtk::Box, role: ChatRole, message: &str) {
     label.set_selectable(true);
     label.set_max_width_chars(88);
     bubble.append(&label);
+    let stamp = gtk::Label::new(Some(&current_timestamp()));
+    stamp.set_xalign(0.0);
+    stamp.set_halign(match bubble_alignment(role) {
+        BubbleAlignment::Start => gtk::Align::Start,
+        BubbleAlignment::End => gtk::Align::End,
+    });
+    stamp.add_css_class("message-meta");
+    bubble.append(&stamp);
     row.append(&bubble);
     container.append(&row);
 }
@@ -961,6 +1055,7 @@ fn append_entry(
     };
     let button = gtk::Button::with_label(&label);
     button.set_halign(gtk::Align::Fill);
+    button.add_css_class("file-row");
 
     if entry.is_directory {
         let path = entry.relative_path;
@@ -1036,6 +1131,56 @@ mod tests {
             super::bubble_alignment(super::ChatRole::Notice),
             super::BubbleAlignment::Start
         );
+    }
+
+    #[test]
+    fn dark_theme_css_covers_every_custom_widget_class() {
+        // Every add_css_class name in the desktop UI must have a matching rule
+        // so polish classes never silently stop applying.
+        for class in [
+            "app-shell",
+            "navigation-rail",
+            "brand-mark",
+            "rail-button",
+            "main-column",
+            "topbar",
+            "topbar-button",
+            "page-title",
+            "status-chip",
+            "page-content",
+            "chat-column",
+            "chat-scroll",
+            "assistant-identity",
+            "assistant-avatar",
+            "message-avatar",
+            "assistant-name",
+            "message-meta",
+            "day-divider",
+            "section-heading",
+            "settings-disclosure",
+            "settings-content",
+            "toolbar",
+            "chat-bubble",
+            "chat-status",
+            "composer",
+            "dim-label",
+            "card",
+            "approval-card",
+            "approval-icon",
+            "approval-heading",
+            "approval-details",
+            "approval-scroll",
+            "approval-countdown",
+            "approval-actions",
+            "file-row",
+            "dark-window",
+        ] {
+            assert!(
+                super::DARK_THEME_CSS.contains(&format!(".{class}"))
+                    || super::DARK_THEME_CSS.contains(&format!("window.{class}")),
+                "DARK_THEME_CSS is missing a rule for .{class}"
+            );
+        }
     }
 
     #[test]

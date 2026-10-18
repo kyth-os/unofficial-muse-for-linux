@@ -502,13 +502,14 @@ mod native {
     }
 
     pub fn build(chip: &gtk::Label) -> AccountPage {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("page-content");
         root.append(&label("Your Muse account · shared conversations & tasks"));
         let settings = gtk::Expander::new(Some("Account connection & sign-in"));
         settings.add_css_class("settings-disclosure");
         settings.set_expanded(true);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.add_css_class("settings-content");
         content.append(&label("Unsupported community account integration. This links your existing personal Muse agent, not a developer API key and not official Mac-device registration. No embedded website; no password, token or cookie form."));
         content.append(&label("Python executable (absolute path; install the community muse-mcp package in this interpreter's virtualenv):"));
         let python = gtk::Entry::new();
@@ -530,6 +531,7 @@ mod native {
         );
         content.append(&consent);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.add_css_class("toolbar");
         let existing = gtk::Button::with_label("Use existing local Muse session");
         let login = gtk::Button::with_label("Sign in with browser…");
         login.set_tooltip_text(Some("Opens official muse.ai in an isolated Chromium-compatible browser. Not all installed browsers are supported. Writes only the selected app/session directory."));
@@ -556,8 +558,9 @@ mod native {
 
         let pages = gtk::Notebook::new();
         pages.set_vexpand(true);
-        let chat = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let chat = gtk::Box::new(gtk::Orientation::Vertical, 10);
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        toolbar.add_css_class("toolbar");
         let threads = gtk::ComboBoxText::new();
         threads.set_hexpand(true);
         threads.set_tooltip_text(Some("Main conversation or actual service-provided side chats. Archived sessions are labeled; no local/synthetic sessions are created."));
@@ -569,7 +572,7 @@ mod native {
         chat.append(&toolbar);
         let scope_label = label("No conversation selected until account connection.");
         chat.append(&scope_label);
-        let history = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let history = gtk::Box::new(gtk::Orientation::Vertical, 10);
         let scroll = gtk::ScrolledWindow::builder()
             .hexpand(true)
             .vexpand(true)
@@ -1229,6 +1232,9 @@ mod native {
             self.tasks_notice.set_text(&state.tasks_notice);
             self.send_notice.set_text(&state.send_notice);
             super::super::clear_chat(&self.history);
+            if !state.history.is_empty() {
+                super::super::append_day_divider(&self.history);
+            }
             for message in &state.history {
                 let role = match message.role.as_str() {
                     "user" => super::super::ChatRole::User,
@@ -1252,6 +1258,7 @@ mod native {
                 );
                 let details = label(&metadata);
                 details.add_css_class("dim-label");
+                details.add_css_class("message-meta");
                 self.history.append(&details);
                 super::super::append_chat(&self.history, role, &message.text);
             }

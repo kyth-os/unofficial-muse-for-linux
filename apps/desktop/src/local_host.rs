@@ -418,20 +418,26 @@ mod native {
         );
         root.append(&consent);
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        toolbar.add_css_class("toolbar");
         let choose = gtk::Button::with_label("Grant a folder to Muse…");
         let start = gtk::Button::with_label("Start local host");
+        start.add_css_class("suggested-action");
         let stop = gtk::Button::with_label("Stop & revoke all");
+        stop.add_css_class("destructive-action");
         for b in [&choose, &start, &stop] {
             toolbar.append(b);
         }
         root.append(&toolbar);
         let status = label("");
+        status.add_css_class("chat-status");
         root.append(&status);
         let grants = label("No folders granted.");
+        grants.add_css_class("dim-label");
         root.append(&grants);
-        root.append(&label(
-            "Pending create approvals · review the entire immutable content before allowing",
-        ));
+        let approvals_heading =
+            label("Pending create approvals · review the entire immutable content before allowing");
+        approvals_heading.add_css_class("section-heading");
+        root.append(&approvals_heading);
         let cards = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let scroll = gtk::ScrolledWindow::builder()
             .hexpand(true)
@@ -625,7 +631,25 @@ mod native {
                 for card in &host.cards {
                     let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
                     body.add_css_class("card");
-                    body.append(&label(&format!("CREATE NEW text file (no overwrite)\nGrant: {}\nFolder: {}\nRelative destination: {}\nFull destination: {}",card.grant_id,card.root.display(),card.request.path,card.root.join(&card.request.path).display())));
+                    body.add_css_class("approval-card");
+                    // Title row: icon + bold question. The heading text itself is
+                    // unchanged; only presentation moves around it.
+                    let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    let icon = gtk::Label::new(Some("⚠"));
+                    icon.add_css_class("approval-icon");
+                    icon.set_valign(gtk::Align::Start);
+                    title_row.append(&icon);
+                    let heading = label(&format!(
+                        "CREATE NEW text file (no overwrite)\nGrant: {}\nFolder: {}\nRelative destination: {}\nFull destination: {}",
+                        card.grant_id,
+                        card.root.display(),
+                        card.request.path,
+                        card.root.join(&card.request.path).display()
+                    ));
+                    heading.add_css_class("approval-heading");
+                    heading.set_hexpand(true);
+                    title_row.append(&heading);
+                    body.append(&title_row);
                     let content = gtk::TextView::new();
                     content.set_editable(false);
                     content.set_cursor_visible(false);
@@ -636,12 +660,26 @@ mod native {
                         .hexpand(true)
                         .min_content_height(180)
                         .build();
+                    scroll.add_css_class("approval-scroll");
                     scroll.set_child(Some(&content));
-                    body.append(&scroll);
+                    // Expandable detail box (Mac pattern); expanded by default so
+                    // the entire immutable content stays reviewable. Read-only.
+                    let details = gtk::Expander::new(Some(&format!(
+                        "Full immutable content · {} characters",
+                        card.request.content.chars().count()
+                    )));
+                    details.add_css_class("approval-details");
+                    details.set_expanded(true);
+                    details.set_child(Some(&scroll));
+                    body.append(&details);
                     let countdown = label("");
+                    countdown.add_css_class("approval-countdown");
                     body.append(&countdown);
                     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    actions.set_halign(gtk::Align::End);
+                    actions.add_css_class("approval-actions");
                     let allow = gtk::Button::with_label("Allow once");
+                    allow.add_css_class("suggested-action");
                     let deny = gtk::Button::with_label("Deny");
                     actions.append(&allow);
                     actions.append(&deny);
@@ -850,6 +888,45 @@ for line in sys.stdin:
             "native exact content\n"
         );
         let allow = widgets[0].allow.clone();
+        // Mac-pattern card structure: read-only content lives inside a scroll
+        // inside an expanded details box; actions are exactly Allow once
+        // (filled) and Deny — never an Always-allow.
+        let widgets_ref = page.ui.widgets.borrow();
+        let content = widgets_ref[0].content.clone();
+        assert!(widgets_ref[0].allow.has_css_class("suggested-action"));
+        drop(widgets_ref);
+        let mut in_scroll = false;
+        let mut in_details = false;
+        let mut node = content.parent();
+        while let Some(widget) = node {
+            if widget.is::<gtk::ScrolledWindow>() {
+                in_scroll = true;
+            }
+            if widget.is::<gtk::Expander>() {
+                in_details = true;
+            }
+            node = widget.parent();
+        }
+        assert!(in_scroll, "approval content must sit in a read-only scroll");
+        assert!(in_details, "approval content must sit in a details box");
+        let mut labels = Vec::new();
+        let mut stack = vec![page.root.clone().upcast::<gtk::Widget>()];
+        while let Some(widget) = stack.pop() {
+            if let Ok(button) = widget.clone().downcast::<gtk::Button>() {
+                labels.push(button.label().unwrap_or_default().to_string());
+            }
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                stack.push(next.clone());
+                child = next.next_sibling();
+            }
+        }
+        assert!(labels.iter().any(|label| label == "Allow once"));
+        assert!(labels.iter().any(|label| label == "Deny"));
+        assert!(
+            !labels.iter().any(|label| label.contains("Always")),
+            "one-time approvals only: no Always-allow button"
+        );
         drop(widgets);
         allow.emit_clicked();
         while !f.0.join("new.txt").exists() {
