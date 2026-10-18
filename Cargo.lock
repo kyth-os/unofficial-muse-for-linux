@@ -1765,6 +1765,8 @@ dependencies = [
  "muse-account",
  "muse-agent-runtime",
  "muse-linux-core",
+ "muse-local-link",
+ "muse-local-tools",
  "muse-meta-api",
  "serde_json",
 ]

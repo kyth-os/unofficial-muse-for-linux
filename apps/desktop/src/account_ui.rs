@@ -365,6 +365,7 @@ pub use native::{AccountPage, build};
 mod native {
     use super::*;
     use crate::account_login::{Cancellation, run_sign_in};
+    use crate::local_host::{AccountContext, BoundaryHook, SharedDevice};
     use gtk::prelude::*;
     use gtk4 as gtk;
     use muse_account::{
@@ -373,6 +374,7 @@ mod native {
     use std::cell::{Cell, RefCell};
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
     #[cfg(test)]
@@ -384,11 +386,21 @@ mod native {
         pub root: gtk::Box,
         pub settings: gtk::Expander,
         pub cancel_login: Rc<dyn Fn()>,
+        pub host_context: AccountContext,
+        pub host_boundary: BoundaryHook,
+        pub host_device: SharedDevice,
+        #[cfg(test)]
+        ui: Rc<Ui>,
     }
 
     struct Ui {
         state: RefCell<State>,
         client: RefCell<Option<AccountClient>>,
+        connected_config: RefCell<Option<BridgeConfig>>,
+        account_active: RefCell<Option<Arc<AtomicBool>>>,
+        host_verified: Cell<bool>,
+        host_boundary: BoundaryHook,
+        host_device: SharedDevice,
         login_cancellation: RefCell<Option<Arc<Cancellation>>>,
         rendering: Cell<bool>,
         root: gtk::Box,
@@ -427,6 +439,7 @@ mod native {
         ),
         History(Result<Vec<HistoryMessage>, String>),
         Send(SendOutcome),
+        SendConnectionError(SendOutcome),
         Login(Result<(), String>),
         AccountChanged,
     }
@@ -608,6 +621,11 @@ mod native {
         let ui = Rc::new(Ui {
             state: RefCell::new(State::default()),
             client: RefCell::new(None),
+            connected_config: RefCell::new(None),
+            account_active: RefCell::new(None),
+            host_verified: Cell::new(false),
+            host_boundary: Rc::new(RefCell::new(None)),
+            host_device: Rc::new(RefCell::new(None)),
             login_cancellation: RefCell::new(None),
             rendering: Cell::new(false),
             root: root.clone(),
@@ -656,9 +674,7 @@ mod native {
         {
             let u = Rc::clone(&ui);
             ui.disconnect.connect_clicked(move |_| {
-                u.cancel_sign_in();
-                u.state.borrow_mut().disconnect();
-                u.client.borrow_mut().take();
+                u.disconnect_local();
                 u.consent.set_active(false);
                 u.prompt.set_text("");
                 u.render();
@@ -725,17 +741,53 @@ mod native {
         let weak = Rc::downgrade(&ui);
         let cancel_login = Rc::new(move || {
             if let Some(ui) = weak.upgrade() {
-                ui.cancel_sign_in();
+                ui.disconnect_local();
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        let host_context = Rc::new(move || {
+            let ui = weak.upgrade()?;
+            if ui.state.borrow().account.is_some() && ui.host_verified.get() {
+                ui.connected_config.borrow().clone()
+            } else {
+                None
             }
         });
         AccountPage {
             root,
             settings,
             cancel_login,
+            host_context,
+            host_boundary: ui.host_boundary.clone(),
+            host_device: ui.host_device.clone(),
+            #[cfg(test)]
+            ui,
         }
     }
 
     impl Ui {
+        fn stop_host(&self) {
+            // The registered host owns transport-stop-before-broker-revoke ordering.
+            let hook = self.host_boundary.borrow().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+            if let Some(device) = self.host_device.borrow_mut().take() {
+                device.active.store(false, Ordering::SeqCst);
+            }
+        }
+        fn disconnect_local(&self) {
+            self.stop_host();
+            self.host_verified.set(false);
+            self.cancel_sign_in();
+            if let Some(active) = self.account_active.borrow_mut().take() {
+                active.store(false, Ordering::SeqCst);
+            }
+            self.state.borrow_mut().disconnect();
+            self.client.borrow_mut().take();
+            self.connected_config.borrow_mut().take();
+        }
+
         fn cancel_sign_in(&self) {
             if let Some(cancellation) = self.login_cancellation.borrow_mut().take() {
                 cancellation.cancel();
@@ -784,7 +836,10 @@ mod native {
                     return;
                 }
             };
-            let client = AccountClient::new(config);
+            *self.connected_config.borrow_mut() = Some(config.clone());
+            let active = Arc::new(AtomicBool::new(true));
+            *self.account_active.borrow_mut() = Some(active.clone());
+            let client = AccountClient::new(config).cancellable(active);
             *self.client.borrow_mut() = Some(client.clone());
             self.state.borrow_mut().connection_notice =
                 "Connecting to the explicitly selected Muse session…".into();
@@ -913,6 +968,16 @@ mod native {
                 return;
             };
             let request = ticket.clone();
+            let device = self
+                .host_device
+                .borrow()
+                .clone()
+                .filter(|d| d.active.load(Ordering::SeqCst));
+            let client = if let Some(device) = &device {
+                client.cancellable(device.active.clone())
+            } else {
+                client
+            };
             self.launch(ticket, move || {
                 match client.connect() {
                     Ok(a)
@@ -924,7 +989,18 @@ mod native {
                     Err(e) => return Reply::Send(SendOutcome::NotSent(e.to_string())),
                     _ => {}
                 }
-                let result = match client.send(request.scope.as_deref(), &text) {
+                let dispatch = match device {
+                    Some(device) if device.active.load(Ordering::SeqCst) => {
+                        client.send_from_device(request.scope.as_deref(), &text, &device.node_id)
+                    }
+                    Some(_) => {
+                        return Reply::Send(SendOutcome::NotSent(
+                            "Local host stopped before dispatch.".into(),
+                        ));
+                    }
+                    None => client.send(request.scope.as_deref(), &text),
+                };
+                let result = match dispatch {
                     Ok(receipt) if !receipt.sent => {
                         SendOutcome::NotSent("Service did not accept the dispatch.".into())
                     }
@@ -932,8 +1008,13 @@ mod native {
                     Ok(_) => SendOutcome::Uncertain(
                         "Service dispatch returned without scoped-history confirmation.".into(),
                     ),
-                    Err(error) if error.uncertain => SendOutcome::Uncertain(error.to_string()),
-                    Err(error) => SendOutcome::NotSent(error.to_string()),
+                    Err(error) => {
+                        return Reply::SendConnectionError(if error.uncertain {
+                            SendOutcome::Uncertain(error.to_string())
+                        } else {
+                            SendOutcome::NotSent(error.to_string())
+                        });
+                    }
                 };
                 Reply::Send(result)
             });
@@ -965,7 +1046,7 @@ mod native {
                         Operation::Login => {
                             Reply::Login(Err("Sign-in worker stopped unexpectedly.".into()))
                         }
-                        Operation::Send => Reply::Send(SendOutcome::Uncertain(
+                        Operation::Send => Reply::SendConnectionError(SendOutcome::Uncertain(
                             "Dispatch worker stopped unexpectedly.".into(),
                         )),
                         Operation::Refresh => Reply::Refresh(
@@ -984,7 +1065,32 @@ mod native {
         }
 
         fn complete(self: &Rc<Self>, ticket: &Ticket, reply: Reply) {
+            if self.state.borrow().busy.as_ref() != Some(ticket) {
+                return;
+            }
             let mut refresh_after = false;
+            let send_connection_error = matches!(&reply, Reply::SendConnectionError(_));
+            // Stop immediately on account verification errors or identity changes,
+            // before any old account result is installed or rendered.
+            if matches!(
+                &reply,
+                Reply::AccountChanged
+                    | Reply::Refresh(Err(_), _, _)
+                    | Reply::Refresh(_, Err(_), _)
+                    | Reply::Refresh(_, _, Err(_))
+                    | Reply::History(Err(_))
+                    | Reply::Send(SendOutcome::NotSent(_))
+                    | Reply::SendConnectionError(_)
+            ) {
+                self.host_verified.set(false);
+                self.stop_host();
+            }
+            if matches!(
+                &reply,
+                Reply::Connect(Ok(_)) | Reply::Refresh(Ok(_), Ok(_), Ok(_))
+            ) {
+                self.host_verified.set(true);
+            }
             {
                 let mut state = self.state.borrow_mut();
                 match reply {
@@ -1001,13 +1107,13 @@ mod native {
                     Reply::History(result) => {
                         state.finish_history(ticket, result);
                     }
-                    Reply::Send(result) => {
+                    Reply::Send(result) | Reply::SendConnectionError(result) => {
                         let confirmed = matches!(&result, SendOutcome::Confirmed);
                         state.finish_send(ticket, result);
                         if confirmed {
                             self.prompt.set_text("");
                         }
-                        refresh_after = true;
+                        refresh_after = !send_connection_error;
                     }
                     Reply::Login(result) => {
                         self.login_cancellation.borrow_mut().take();
@@ -1015,6 +1121,10 @@ mod native {
                     }
                     Reply::AccountChanged => {
                         state.account_changed();
+                        if let Some(active) = self.account_active.borrow_mut().take() {
+                            active.store(false, Ordering::SeqCst);
+                        }
+                        self.connected_config.borrow_mut().take();
                         self.client.borrow_mut().take();
                         self.consent.set_active(false);
                         self.prompt.set_text("");
@@ -1252,6 +1362,144 @@ mod native {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
+        }
+
+        #[test]
+        #[ignore = "requires GTK display; run under xvfb-run --test-threads=1"]
+        fn native_account_context_device_dispatch_and_disconnect_coupling() {
+            use crate::local_host::DeviceLease;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            gtk::init().unwrap();
+            let scratch = std::env::var_os("TMPDIR")
+                .map(PathBuf::from)
+                .unwrap()
+                .join(format!(
+                    "account-host-ui-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+            std::fs::create_dir(&scratch).unwrap();
+            let script = scratch.join("bridge.py");
+            std::fs::write(
+                &script,
+                r#"
+import json,sys,pathlib
+r=json.load(sys.stdin)
+if r['op']=='send':
+ pathlib.Path(__file__).with_name('sent').write_text(json.dumps(r))
+ data={'sent':True,'confirmed':False,'message_id':None}
+elif r['op']=='connect': data={'identity_name':'fake','vm_id':'fake-vm','threads':[]}
+elif r['op']=='tasks': data={'schedules':[],'runs':[]}
+else: data=[]
+print(json.dumps({'ok':True,'data':data}))
+"#,
+            )
+            .unwrap();
+            let config = BridgeConfig {
+                python: "/usr/bin/python3".into(),
+                script,
+                config_dir: scratch.clone(),
+            };
+            let page = build(&gtk::Label::new(None));
+            assert!((page.host_context)().is_none());
+            page.ui.host_verified.set(true);
+            *page.ui.connected_config.borrow_mut() = Some(config.clone());
+            *page.ui.client.borrow_mut() = Some(AccountClient::new(config.clone()));
+            page.ui.state.borrow_mut().account = Some(AccountSnapshot {
+                identity_name: "fake".into(),
+                vm_id: "fake-vm".into(),
+                threads: vec![],
+            });
+            assert_eq!((page.host_context)().unwrap().script, config.script);
+            let boundary = Rc::new(Cell::new(0));
+            let count = boundary.clone();
+            *page.host_boundary.borrow_mut() = Some(Rc::new(move || count.set(count.get() + 1)));
+            let active = Arc::new(AtomicBool::new(true));
+            *page.host_device.borrow_mut() = Some(DeviceLease {
+                node_id: "linux-registered-test".into(),
+                active: active.clone(),
+            });
+            page.ui.prompt.set_text("once");
+            page.ui.send_message();
+            pump_until(|| page.ui.state.borrow().busy.is_none());
+            let sent: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(scratch.join("sent")).unwrap())
+                    .unwrap();
+            assert_eq!(sent["device_id"], "linux-registered-test");
+            page.ui.state.borrow_mut().acknowledge_send();
+            page.host_device.borrow_mut().take();
+            active.store(false, Ordering::SeqCst);
+            page.ui.prompt.set_text("after stop");
+            page.ui.send_message();
+            pump_until(|| page.ui.state.borrow().busy.is_none());
+            let sent: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(scratch.join("sent")).unwrap())
+                    .unwrap();
+            assert!(sent.get("device_id").is_none());
+            let refresh = page.ui.state.borrow_mut().begin_read(false, true).unwrap();
+            page.ui.complete(
+                &refresh,
+                Reply::Refresh(
+                    Ok(AccountSnapshot {
+                        identity_name: "fake".into(),
+                        vm_id: "fake-vm".into(),
+                        threads: vec![],
+                    }),
+                    Err("connection failed".into()),
+                    Ok(TasksSnapshot {
+                        schedules: vec![],
+                        runs: vec![],
+                    }),
+                ),
+            );
+            assert_eq!(
+                boundary.get(),
+                1,
+                "a failed account IO boundary must stop the host"
+            );
+            assert!((page.host_context)().is_none());
+            let stale = refresh.clone();
+            page.ui.complete(
+                &stale,
+                Reply::Refresh(
+                    Ok(AccountSnapshot {
+                        identity_name: "fake".into(),
+                        vm_id: "fake-vm".into(),
+                        threads: vec![],
+                    }),
+                    Ok(vec![]),
+                    Ok(TasksSnapshot {
+                        schedules: vec![],
+                        runs: vec![],
+                    }),
+                ),
+            );
+            assert!(
+                (page.host_context)().is_none(),
+                "stale successful refresh cannot re-enable host context"
+            );
+            page.ui.state.borrow_mut().acknowledge_send();
+            let failed_send = page
+                .ui
+                .state
+                .borrow_mut()
+                .begin_send("connection error")
+                .unwrap();
+            page.ui.complete(
+                &failed_send,
+                Reply::SendConnectionError(SendOutcome::Uncertain(
+                    "connection closed after dispatch".into(),
+                )),
+            );
+            assert_eq!(boundary.get(), 2);
+            page.ui.disconnect.emit_clicked();
+            assert_eq!(boundary.get(), 3);
+            assert!((page.host_context)().is_none());
+            assert!(page.host_device.borrow().is_none());
+            std::fs::remove_dir_all(scratch).unwrap();
         }
 
         #[test]

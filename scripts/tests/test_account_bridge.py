@@ -25,6 +25,22 @@ class FakeClient:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_optional_device_is_validated_and_forwarded_once(self):
+        bridge = load_bridge()
+        request = {"op": "send", "message": "hello", "config_dir": "/unused", "device_id": "linux-0123"}
+        bridge.validate_request(request)
+        class Client:
+            def history(self, **kwargs): return []
+            def send(self, **kwargs):
+                self.sent = kwargs
+                return {"ok": True, "sent": True}
+        client = Client()
+        bridge.Adapter(client, {}, confirmation_attempts=1).dispatch(request)
+        self.assertEqual(client.sent["device_id"], "linux-0123")
+        for invalid in [None, "", " spaces ", "x/../y", "x" * 129, 3, "ü"]:
+            with self.subTest(invalid=invalid), self.assertRaises(bridge.BridgeFailure):
+                bridge.validate_request(dict(request, device_id=invalid))
+
     def test_history_keeps_latest_message_update_preserves_role_and_scope(self):
         bridge = load_bridge()
         class Client(FakeClient):
@@ -350,6 +366,14 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(events[0][0], 'chat.stream')
         self.assertEqual(events[0][1]['body']['session_id'], 'selected-thread')
         self.assertEqual(events[0][1]['body']['items'], [{'type': 'text', 'text': 'hello'}])
+        self.assertNotIn('device_id', events[0][1]['body'])
+        with patch.dict('sys.modules', {'muse_mcp.client': module}):
+            config = {'node_id': 'old-config-node'}
+            client = bridge.community_client(config)
+            client.send(message='once', thread='selected-thread', device_id='linux-new-session')
+        self.assertEqual(events[-2][1]['body']['device_id'], 'linux-new-session')
+        self.assertEqual(events[-2][1]['body']['node_id'], 'old-config-node')
+        self.assertEqual(config, {'node_id': 'old-config-node'})
 
     def test_connect_projects_only_typed_identity_and_threads(self):
         bridge = load_bridge()

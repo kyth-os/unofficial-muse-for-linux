@@ -8,6 +8,10 @@ use std::{
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -27,6 +31,7 @@ pub struct BridgeConfig {
 #[derive(Clone, Debug)]
 pub struct AccountClient {
     config: BridgeConfig,
+    active: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,7 +140,18 @@ struct Envelope<T> {
 
 impl AccountClient {
     pub fn new(config: BridgeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            active: None,
+        }
+    }
+    /// Bound this clone's subprocesses to a session lease. False cancels locally;
+    /// an already dispatched remote action cannot be recalled and is uncertain.
+    pub fn cancellable(&self, active: Arc<AtomicBool>) -> Self {
+        Self {
+            config: self.config.clone(),
+            active: Some(active),
+        }
     }
     pub fn connect(&self) -> Result<AccountSnapshot, AccountError> {
         self.request(serde_json::json!({"op": "connect"}), false)
@@ -164,14 +180,40 @@ impl AccountClient {
         thread: Option<&str>,
         message: &str,
     ) -> Result<DispatchReceipt, AccountError> {
+        self.send_optional_device(thread, message, None)
+    }
+    /// Explicit registration attribution; never changes saved account settings.
+    pub fn send_from_device(
+        &self,
+        thread: Option<&str>,
+        message: &str,
+        device_id: &str,
+    ) -> Result<DispatchReceipt, AccountError> {
+        if device_id.is_empty()
+            || device_id.len() > 128
+            || !device_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(AccountError::new(ErrorCode::InvalidRequest, false));
+        }
+        self.send_optional_device(thread, message, Some(device_id))
+    }
+    fn send_optional_device(
+        &self,
+        thread: Option<&str>,
+        message: &str,
+        device_id: Option<&str>,
+    ) -> Result<DispatchReceipt, AccountError> {
         validate_thread(thread)?;
         if message.trim().is_empty() || message.len() > 512 * 1024 {
             return Err(AccountError::new(ErrorCode::InvalidRequest, false));
         }
-        let receipt: DispatchReceipt = self.request(
-            serde_json::json!({"op": "send", "thread": thread, "message": message}),
-            true,
-        )?;
+        let mut request = serde_json::json!({"op": "send", "thread": thread, "message": message});
+        if let Some(device_id) = device_id {
+            request["device_id"] = device_id.into();
+        }
+        let receipt: DispatchReceipt = self.request(request, true)?;
         if receipt.confirmed
             && (!receipt.sent || receipt.message_id.as_deref().is_none_or(str::is_empty))
         {
@@ -204,7 +246,13 @@ impl AccountClient {
         if bytes.len() > MAX_REQUEST {
             return Err(AccountError::new(ErrorCode::InvalidRequest, false));
         }
-        let output = run_bridge(&self.config, &bytes, DEADLINE, sending)?;
+        let output = run_bridge_active(
+            &self.config,
+            &bytes,
+            DEADLINE,
+            sending,
+            self.active.as_deref(),
+        )?;
         let envelope: Envelope<T> = serde_json::from_slice(&output)
             .map_err(|_| AccountError::new(ErrorCode::ProtocolError, sending))?;
         if envelope.ok {
@@ -250,12 +298,25 @@ fn nonblocking(fd: i32) -> std::io::Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 fn run_bridge(
     config: &BridgeConfig,
     request: &[u8],
     timeout: Duration,
     sending: bool,
 ) -> Result<Vec<u8>, AccountError> {
+    run_bridge_active(config, request, timeout, sending, None)
+}
+fn run_bridge_active(
+    config: &BridgeConfig,
+    request: &[u8],
+    timeout: Duration,
+    sending: bool,
+    active: Option<&AtomicBool>,
+) -> Result<Vec<u8>, AccountError> {
+    if active.is_some_and(|a| !a.load(Ordering::SeqCst)) {
+        return Err(AccountError::new(ErrorCode::InvalidRequest, false));
+    }
     let mut command = Command::new(&config.python);
     command.env_clear();
     for key in [
@@ -308,6 +369,9 @@ fn run_bridge(
     let mut output = Vec::new();
     let mut eof = false;
     loop {
+        if active.is_some_and(|a| !a.load(Ordering::SeqCst)) {
+            return Err(AccountError::new(ErrorCode::BridgeFailure, sending));
+        }
         if started.elapsed() >= timeout {
             return Err(AccountError::new(ErrorCode::Timeout, sending));
         }

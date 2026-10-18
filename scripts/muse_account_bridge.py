@@ -229,7 +229,7 @@ def validate_request(request):
         raise BridgeFailure("invalid_request")
     op = request.get("op")
     allowed = {"connect": set(), "history": {"thread", "limit"},
-               "tasks": set(), "send": {"thread", "message"}}
+               "tasks": set(), "send": {"thread", "message", "device_id"}}
     if not isinstance(op, str) or op not in allowed:
         raise BridgeFailure("invalid_request")
     if set(request) - ({"op", "config_dir"} | allowed[op]):
@@ -245,6 +245,10 @@ def validate_request(request):
         limit = request.get("limit")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
             raise BridgeFailure("invalid_request")
+    if "device_id" in request:
+        device = request["device_id"]
+        if not isinstance(device, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device) is None:
+            raise BridgeFailure("invalid_request")
     if op == "send":
         message = request.get("message")
         if not isinstance(message, str) or not message.strip() or len(message.encode("utf-8")) > 512 * 1024:
@@ -257,12 +261,14 @@ def community_client(config):
     except (ImportError, OSError):
         raise BridgeFailure("bridge_unavailable") from None
     class AwaitedMuseClient(MuseClient):
-        def send(self, message, thread=None, wait_seconds=0, fire_and_forget=True):
+        def send(self, message, thread=None, wait_seconds=0, fire_and_forget=True, device_id=None):
             # Keep the Noise connection alive until the server processes the
             # request. Upstream's immediate-close dispatch can drop the write.
             # History below, not this transport response, proves persistence.
             body = {"items": [{"type": "text", "text": message}],
                     "node_id": config["node_id"], "capabilities": {}}
+            if device_id is not None:
+                body["device_id"] = device_id
             if thread is not None:
                 body["session_id"] = thread
             with self._gateway(config) as gateway:
@@ -347,7 +353,8 @@ class Adapter:
             baseline_seq = max((r["seq"] for r in baseline), default=0)
             baseline_ids = {r["message_id"] for r in baseline}
             self.send_started = True
-            result = checked(self.client.send(message=message, thread=thread, fire_and_forget=True, wait_seconds=0), dict)
+            device = {"device_id": request["device_id"]} if "device_id" in request else {}
+            result = checked(self.client.send(message=message, thread=thread, fire_and_forget=True, wait_seconds=0, **device), dict)
             if result.get("sent") is not True:
                 raise BridgeFailure("protocol_error", uncertain=True)
             for attempt in range(self.confirmation_attempts):

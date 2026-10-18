@@ -58,6 +58,55 @@ print(json.dumps({'ok':True,'data':[{'message_id':'msg', 'seq':9, 'role':'assist
 }
 
 #[test]
+fn cancelled_device_lease_never_dispatches_and_interrupts_inflight_bridge() {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+    let f = Fixture::new("import sys,time\nsys.stdin.read()\ntime.sleep(30)\n");
+    let active = Arc::new(AtomicBool::new(false));
+    let client = f.client().cancellable(active.clone());
+    assert!(
+        client
+            .send_from_device(None, "hello", "linux-test")
+            .is_err()
+    );
+    active.store(true, Ordering::SeqCst);
+    let start = Instant::now();
+    let worker = std::thread::spawn(move || client.send_from_device(None, "hello", "linux-test"));
+    std::thread::sleep(Duration::from_millis(80));
+    active.store(false, Ordering::SeqCst);
+    assert!(worker.join().unwrap().is_err());
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn explicit_device_send_preserves_device_and_rejects_malformed_ids() {
+    let f = Fixture::new(
+        r#"
+import json, sys
+r = json.load(sys.stdin)
+assert r['device_id'] == 'linux-test-123' and r['thread'] == 'scope'
+print(json.dumps({'ok':True,'data':{'sent':True,'confirmed':False,'message_id':None}}))
+"#,
+    );
+    assert!(
+        f.client()
+            .send_from_device(Some("scope"), "hello", "linux-test-123")
+            .unwrap()
+            .sent
+    );
+    for bad in ["", " space ", "a/b", "ü"] {
+        let error = f.client().send_from_device(None, "hello", bad).unwrap_err();
+        assert_eq!(error.code, muse_account::ErrorCode::InvalidRequest);
+        assert!(!error.uncertain);
+    }
+}
+
+#[test]
 fn tasks_parses_schedule_and_run_types() {
     let f = Fixture::new(
         r#"
