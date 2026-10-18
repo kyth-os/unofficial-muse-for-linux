@@ -1,24 +1,24 @@
 # Goal-ready plan: full-feature Linux port of Muse for Mac
 
-**Plan status:** proposed scope; feature baseline reviewed 2026-10-17. This is a product plan, not a claim that the current prototype is usable.
+**Plan status:** proposed scope; account-link objective clarified 2026-10-18. This is a product plan, not a claim that the current prototype is usable.
 
 ## Copy-ready goal
 
-Build a standalone, Linux-native desktop agent that ports the user-visible capabilities of the documented Muse for Mac experience. Reimplement its desktop behavior using Linux portals, accessibility APIs, browser support, and provider-specific connectors; do not require a Mac host, control a Mac app, or wrap the Muse website. Users must be able to converse with the agent, delegate multi-step work, grant Linux files and supported app/service access, review progress, approve consequential actions, and stop or resume work. Use supported Muse service interfaces when available; keep model/service authentication separate from Linux desktop permissions and never claim unsupported account compatibility.
+Build a standalone, Linux-native companion/local host for the user's existing Muse.ai personal agent, behaving like Muse for Mac on Linux. Pair through a documented Muse account/device flow permitted for the intended use and distribution, so the user gets the same Muse identity, conversations, tasks, plans, approvals, and history; provide Linux-native files, apps, browser, and desktop capabilities through explicit permissions. Do not substitute a separate developer-key model client, wrap the Muse website, or require/control a Mac. If no permitted account/pairing path fits the intended distribution, treat that as a P0 blocker—not as permission to use private routes, browser cookies, or a different backend and claim parity.
 
 “Feature complete” means every feature in the frozen parity matrix below has an implementation, a documented support boundary, and passing end-to-end tests on the supported Linux desktop matrix. A folder browser, packaged shell, mocked assistant, or separate model API is not sufficient to call this a Muse-for-Mac port.
 
 ## Product target and current gap
 
-The supplied TechCrunch report describes Muse for Mac taking actions across local files and native apps, including Messages, Calendar, Notes, and Mail, with opt-in access and approval for sensitive actions. Meta’s current product pages describe a broader agent that plans and completes multi-step tasks, browses and acts on the web, connects to apps, creates documents and images, tracks goals/reminders, and continues work in the background. Meta describes the Mac app as working with desktop files, apps, browser tabs, Messages, Calendar, and Notes. Treat the exact installed Mac build as the authority when validating each row; marketing pages and the article are a starting inventory, not proof that every product-wide feature is exposed in the Mac app.
+The supplied TechCrunch report and Meta's current product pages describe Muse as one personal agent available through multiple clients, with Muse for Mac able to manage messages, find local files, and—with permission—control Mac apps. The Linux target is that same account-linked agent paired with a Linux-native local capability host, not a new agent that merely calls the Meta Model API. Treat the exact installed Mac build as the authority when validating each row; public product pages are an initial inventory, not proof that every product-wide feature is exposed in the Mac app.
 
-**Current Linux baseline:** GTK4 shell; filesystem core confines reads to a selected root, supports bounded recursive filename search without following symlinks, and previews bounded UTF-8 text. The app now includes a simple session-only chat UI, a non-streaming Meta Responses API adapter, and a bounded read-only file tool loop. The developer key and chat are held in memory; paid use and filename/content sharing each require separate opt-ins. Adapter/runtime behavior is covered by local mock tests, but no live API request has been made or verified. The freshly rebuilt AppImage launched on KDE Wayland via XWayland, displayed the assistant UI, and rejected a prompt locally when no API key was active; no key was entered and no request was sent. The chooser, listing, and local preview were manually checked on an earlier build; the search UI still needs end-to-end GUI verification. Streaming, plans, durable history, cancel/resume, consumer sign-in, browser and desktop-app connectors, file writes, and background work are not implemented. The AppImage remains a prototype, not a usable feature-complete port.
+**Current Linux baseline:** GTK4 shell; filesystem core confines reads to a selected root, supports bounded recursive filename search without following symlinks, and previews bounded UTF-8 text. The app has a session-only chat UI and an experimental direct Meta Model API adapter with a developer-key flow. That API route is separate from the user's Muse.ai personal-agent account: there is no Muse account sign-in, device pairing, shared conversation/task history, or local-host bridge yet, so the current prototype does not meet the core objective. The API adapter/runtime are mock-tested; no live request was made. A dark chat-first shell and Chats/Files navigation now exist. The AppImage launched on KDE Wayland via XWayland; navigation and settings were manually checked. Streaming, account linking, task continuity, desktop-app connectors, file writes, and background work remain unimplemented. The AppImage is a prototype, not a usable Muse.ai Linux companion.
 
 ## Target capability matrix (to freeze in Phase 0)
 
 | Muse capability to validate against the Mac app | Linux equivalent required for parity | Current status |
 |---|---|---|
-| Conversation, model response, streaming, and task history | Native chat/task UI with a supported backend and persistent sessions | Partial: non-streaming adapter and session-only chat; no live API or GUI verification yet |
+| Same Muse.ai account, conversation, model response, and task history | Native client paired to the user's existing Muse agent; synced chats/tasks and persistent history | Not implemented: developer-key API route is separate and session-only; no account auth or pairing |
 | Multi-step plans, tool execution, progress, cancel, and resume | Agent runtime, typed tool registry, policy broker, durable task state | Partial: bounded read-only file tools; no plan UI, cancel/resume, or durable state |
 | File context and file actions | Scoped search/read plus approved create/edit/move/delete and recovery | Read-only grant, browse, preview, bounded filename search, separately consented file context; no writes |
 | Browser context and web tasks | Supported browser extension/native bridge and visible, user-intervenable actions | Not implemented |
@@ -27,7 +27,7 @@ The supplied TechCrunch report describes Muse for Mac taking actions across loca
 | Documents/images, web research, reminders/goals, and other assistant skills | Verified backend capabilities exposed through native UI and Linux tools | Not implemented; confirm which are in the Mac app |
 | Background work, notifications, and personalization/memory | Durable scheduler, audit/history, pause/cancel, user-visible memory controls | Not implemented; confirm Mac-app scope |
 | Per-action permission, sensitive approval, audit, and revocation | Consent broker with exact preview and verified side effects | Not implemented |
-| Same consumer Muse account and task continuity | Documented consumer login/API and end-to-end account verification | Unvalidated; separate compatibility question, not a gate for Linux-native features |
+| Muse.ai account sign-in, device pairing, and same-agent continuity | Account-linked Linux local host paired to the user's existing Muse agent | Not implemented. Meta's Linux Device SDK provides a documented personal-gadget path, but it is unsupported and its terms/fit for public AppImage distribution are unresolved |
 | Desktop distribution and host integration | AppImage plus working portal and native Wayland support | AppImage launches via XWayland; native Wayland unverified |
 
 ### P0 defect resolved: folder chooser lifetime
@@ -43,28 +43,28 @@ In `apps/desktop/src/main.rs`, the chooser used to be a local variable inside th
 - Read, ordinary write, and sensitive write are distinct permissions. Sensitive actions (e.g. send, share, publish, purchase, delete) require a fresh, detail-specific approval each time; deny/cancel must leave no side effect.
 - Keep model/backend, local OS integrations, and user-visible task history behind replaceable, testable interfaces.
 
-## Muse service backend and account compatibility are separate from the Linux port
+## Muse.ai account integration and Linux host pairing are core requirements
 
-The port target is the Mac agent’s user-visible workflow, implemented on Linux. It must run without a Mac host or Mac application. Linux filesystem, browser, screen, and app actions are provided by Linux-native permission and connector APIs; a Muse account/session is not a substitute for those host integrations.
+The target is the user's existing Muse.ai agent, accessed from a Linux-native desktop client/local host. It must run without a Mac host or Mac application, preserve the user's Muse identity and continuity, and provide Linux filesystem, browser, screen, and app actions through Linux-native permissions. The account link and local capability bridge are both required; neither replaces the other.
 
-Use a supported Muse/Meta service interface for the assistant backend when one is available. Keep the adapter replaceable, show which service/account is active, and never use browser cookies, private routes, or internal session data. A developer API key or another supported model service may provide responses, but it does not by itself reproduce the Mac agent or establish consumer-account continuity.
+The direct Meta Model API adapter currently in this repository is only an experimental developer-API path. It does not sign in to muse.ai, invoke the user's existing agent, or preserve the same chats/tasks, and must not be presented as the product authentication path. Meta publishes a Linux Device SDK that pairs a Linux gadget to a Muse account and offers host commands/file read-write. However, it is a personal gadget SDK paired through the Muse phone app, not a Mac-style desktop client; it runs commands with the installed account's permissions. Its token terms are personal/non-commercial, the SDK is unsupported and may change or stop, and they restrict publicly offering token-bearing devices. Whether those terms permit a public AppImage where every user supplies their own token is unclear and needs Meta confirmation. As of 2026-10-18, open issue #154 reports that Muse-to-device command dispatch does not work for at least one account; an Oct. 15 report says it worked on a newly created account but not the reporter's existing account. Treat the SDK as a lead for a personal proof of concept, not a reliable account-link solution or public AppImage foundation until the user's own account and intended use are verified.
 
-Same-consumer-account sign-in and task/history continuity remain a separate compatibility item. Only implement them through documented, authorized flows and verify login, revocation, history, and permission behavior. Do not make unsupported pairing a blocker for Linux-native host features, and do not claim account compatibility until verified.
+Account sign-in, pairing, and same-agent continuity are P0 product requirements. Evaluate the published Linux Device SDK using only the user's own Muse account/token, and verify login, revocation, shared conversation/task state, and app-to-host command dispatch on that exact account—not merely device pairing. The SDK is explicitly personal/non-commercial and unsupported; clarify with Meta whether a public AppImage that requires each user to provide their own token is permitted. Do not publicly distribute a token-bearing device without written permission. Do not scrape the website, reuse browser cookies, call undocumented endpoints, or extract private tokens. If the SDK cannot support the required desktop UX or distribution, obtain an authorized alternative rather than substituting the developer API and claiming this objective is met.
 
 ## Work plan and exit gates
 
-### Phase 0 — Freeze the parity contract and unblock the shell
+### Phase 0 — Freeze the parity contract and establish permitted Muse pairing
 
-- Record the exact Muse for Mac version and observed behaviors; split Mac-specific features from product-wide Muse features. Build a row-by-row matrix: capability, Linux equivalent, provider/dependency, permission scope, tests, and status.
-- Record the supported assistant-service options separately from Linux host integration. Do not block Linux-native features on undocumented same-account pairing.
+- Record the exact Muse for Mac version, sign-in/pairing flow, and observed local-host behavior. Evaluate Meta's published Linux Device SDK as a possible personal account-linked path; it is documented but explicitly unsupported and personal/non-commercial. Confirm on the user's own account that Muse can invoke device commands, and confirm the terms permit the intended distribution and its scopes match the Mac app. Build a row-by-row matrix: capability, Linux equivalent, provider/dependency, permission scope, tests, and status.
+- Treat permitted account auth, same-agent continuity, and local-host registration as P0 gates. Keep them distinct from Linux permission APIs, but do not substitute a developer API for them.
 - The chooser lifetime regression is fixed and manually verified through the KDE chooser: selected folder, listed file, and text preview. Keep the automated lifecycle regression and repeat the portal check in release qualification; test native Wayland and XWayland separately.
 
-**Exit:** chooser stays open until user action; cancel changes nothing; accept grants only the selected root, lists it, and reads a fixture text file (verified manually on KDE; automate portal coverage where possible). The service-backend boundary and account-compatibility status are documented.
+**Exit:** an account-linked Linux path is proven against the user's Muse agent, with terms and distribution boundaries recorded; otherwise the blocker is explicit. The local client can identify the paired account without exposing credentials. The chooser stays open until user action; cancel changes nothing; accept grants only the selected root, lists it, and reads a fixture text file.
 
 ### Phase 1 — Agent conversation and task runtime
 
 - Extend the existing prototype chat with conversation history, streaming response, action plan, current step, approvals, progress, structured errors, cancellation, and resume.
-- Harden the existing non-streaming adapter (developer-key auth, Responses API messages/tool calls, error and rate-limit handling); add streaming and cancellation. Current mock tests do not establish live-service compatibility.
+- Implement the documented Muse account/client protocol and prove that chat/tasks resolve to the user's existing Muse agent. Do not treat the experimental developer-key Responses API adapter as a substitute; retain it only if useful for isolated backend experiments.
 - Add a typed tool registry and policy broker. Each tool declares provider, input/output schema, read/write/sensitive classification, required grant, idempotency/status query, and auditable result.
 - Persist task state safely across app restart. Keep secrets in an OS credential store; redact them from logs, prompts, and crash reports.
 
@@ -125,15 +125,18 @@ Same-consumer-account sign-in and task/history continuity remain a separate comp
 
 - Every frozen target feature is implemented and passes its end-to-end acceptance case on the declared Linux matrix.
 - The folder grant works in the actual AppImage on KDE Wayland; the issue is not considered solved by unit tests alone.
-- A real, supported assistant backend and every claimed Linux browser/app connector perform end-to-end work; no mock or packaging-only milestone is called a port. If the backend is not the supported Muse service, name it accurately and do not claim Muse account continuity.
+- The supported Muse account flow reaches the user's existing agent and shares the expected history/task state; every claimed Linux browser/app connector performs end-to-end work. No developer API mock or packaging-only milestone is called a Muse.ai port.
 - Read/write/sensitive permissions, approval, revoke, audit, and recovery behavior meet the safety rules above.
-- Any same-consumer-account compatibility claim is verified through a documented supported flow; this is reported separately from Linux-native behavior parity.
+- Same-account continuity and Linux-native host capabilities both pass end-to-end; neither can substitute for the other.
 
 ## References
 
 - User-provided [TechCrunch report (September 18, 2026)](https://techcrunch.com/2026/09/18/metas-muse-hits-mac-letting-the-ai-take-actions-on-your-computer/).
 - [Meta Muse for Productivity](https://ai.meta.com/muse/productivity/), [Muse product capabilities](https://ai.meta.com/muse/), and [Muse download page](https://ai.meta.com/muse/download/).
 - [Meta Muse Connector guidelines](https://platform.muse.ai/docs) (tool scopes, approval, sensitive writes, audit/status handling).
+- [Muse.ai product](https://muse.ai/) and [Meta Connect 2026 Mac update](https://about.fb.com/news/2026/09/the-biggest-news-from-connect-2026/) (same personal agent across clients; permissioned Mac computer use).
+- [Official Muse Linux Device SDK](https://github.com/facebookincubator/muse-gadget-sdk/tree/main/linux) and [Gadget SDK Token Terms](https://gadgets.muse.ai/sdk-terms) (account pairing path and its personal/non-commercial, unsupported scope).
+- [Open Linux-gadget invocation issue #154](https://github.com/facebookincubator/muse-gadget-sdk/issues/154) (reports app-to-device dispatch varies by account; recheck before relying on it).
 - [Meta Model API Responses API](https://dev.meta.ai/docs/protocols/responses) (developer API; distinct from consumer Muse account continuity).
 - [GTK4 GtkNativeDialog lifecycle](https://docs.gtk.org/gtk4/class.NativeDialog.html).
 - [XDG FileChooser portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html), [ScreenCast portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html), [RemoteDesktop portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html), and [AT-SPI](https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/).

@@ -21,6 +21,72 @@ enum AgentUiMessage {
     Finished(AgentSession, Result<AgentResponse, String>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChatRole {
+    User,
+    Assistant,
+    Notice,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BubbleAlignment {
+    Start,
+    End,
+}
+
+fn bubble_alignment(role: ChatRole) -> BubbleAlignment {
+    match role {
+        ChatRole::User => BubbleAlignment::End,
+        ChatRole::Assistant | ChatRole::Notice => BubbleAlignment::Start,
+    }
+}
+
+const DARK_THEME_CSS: &str = r#"
+window, .app-shell { background-color: #111318; color: #e9ebf0; }
+.navigation-rail { background-color: #151820; border-right: 1px solid #292d37; padding: 14px 10px; }
+.brand-mark { background-color: #2867c7; color: #ffffff; border-radius: 16px; font-weight: 700; min-width: 42px; min-height: 42px; }
+.rail-button { min-width: 44px; min-height: 44px; padding: 0; border-radius: 14px; background: transparent; color: #b5bac6; }
+.rail-button:hover { background-color: #242833; color: #ffffff; }
+.rail-button.active { background-color: #26344a; color: #8fbdff; }
+.main-column { background-color: #111318; }
+.topbar { padding: 12px 20px; border-bottom: 1px solid #292d37; }
+.page-title { background-color: #1d2028; border-radius: 20px; padding: 8px 14px; font-weight: 600; }
+.status-chip { color: #aeb5c2; background-color: #1b1e25; border: 1px solid #2b303b; border-radius: 14px; padding: 6px 10px; }
+.page-content { padding: 18px 24px; }
+.assistant-identity { padding: 0 0 6px; }
+.assistant-avatar { background-color: #303947; color: #dbe9ff; border-radius: 20px; min-width: 40px; min-height: 40px; font-weight: 700; }
+.assistant-name { font-weight: 600; }
+.settings-disclosure { background-color: #191c23; border: 1px solid #292d37; border-radius: 14px; padding: 10px 14px; }
+.settings-content { padding: 10px 2px 4px; }
+.chat-bubble { padding: 12px 16px; border-radius: 20px; }
+.chat-bubble.user { background-color: #173d67; color: #edf5ff; }
+.chat-bubble.assistant { background-color: #222630; color: #edf0f5; }
+.chat-bubble.notice { background-color: #352d1d; color: #f4d99b; }
+.chat-status { color: #aeb5c2; padding: 2px 6px; }
+.composer { background-color: #1c2028; border: 1px solid #303541; border-radius: 22px; padding: 8px; }
+.composer entry { background: transparent; border: 0; box-shadow: none; }
+entry, searchentry, textview { color: #edf0f5; background-color: #191c23; border: 1px solid #303541; border-radius: 12px; }
+button { color: #e9ebf0; background-color: #242832; border: 1px solid #303541; border-radius: 12px; padding: 8px 12px; }
+button:hover { background-color: #303541; }
+button.suggested-action { color: #ffffff; background-color: #2867c7; border-color: #2867c7; }
+button.suggested-action:hover { background-color: #3478dc; }
+.dim-label { color: #aeb5c2; }
+.card { color: #c6cad3; background-color: #1b1e25; border: 1px solid #292d37; border-radius: 12px; padding: 12px; }
+checkbutton { color: #d7dae1; }
+"#;
+
+fn install_dark_theme() {
+    if let Some(display) = gtk::gdk::Display::default() {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(DARK_THEME_CSS);
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
 #[derive(Clone)]
 struct DialogLease<T> {
     active: Rc<RefCell<Option<T>>>,
@@ -55,35 +121,92 @@ fn main() {
 }
 
 fn build_ui(app: &gtk::Application) {
+    install_dark_theme();
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Unofficial Muse for Linux")
-        .default_width(1080)
-        .default_height(720)
+        .default_width(1240)
+        .default_height(820)
         .build();
+    window.add_css_class("dark-window");
 
     let grant: SharedGrant = Rc::new(RefCell::new(None));
     let current_directory: SharedDirectory = Rc::new(RefCell::new(PathBuf::new()));
     let active_dialog = DialogLease::<gtk::FileChooserNative>::default();
+    let api_key: SharedApiKey = Rc::new(RefCell::new(None));
+    let session: SharedSession = Rc::new(RefCell::new(AgentSession::new()));
+    let agent_busy = Rc::new(Cell::new(false));
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    root.set_margin_top(24);
-    root.set_margin_bottom(24);
-    root.set_margin_start(24);
-    root.set_margin_end(24);
+    let shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    shell.add_css_class("app-shell");
 
-    let title = gtk::Label::new(Some("Muse for Linux"));
-    title.set_xalign(0.0);
-    title.add_css_class("title-1");
-    root.append(&title);
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    sidebar.add_css_class("navigation-rail");
+    sidebar.set_size_request(68, -1);
+    let brand = gtk::Label::new(Some("M"));
+    brand.add_css_class("brand-mark");
+    sidebar.append(&brand);
+    let chats_nav = gtk::Button::from_icon_name("chat-symbolic");
+    chats_nav.set_tooltip_text(Some("Chats"));
+    chats_nav.add_css_class("rail-button");
+    chats_nav.add_css_class("active");
+    sidebar.append(&chats_nav);
+    let files_nav = gtk::Button::from_icon_name("folder-symbolic");
+    files_nav.set_tooltip_text(Some("Files"));
+    files_nav.add_css_class("rail-button");
+    sidebar.append(&files_nav);
+    let nav_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    nav_spacer.set_vexpand(true);
+    sidebar.append(&nav_spacer);
 
+    let main_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    main_column.add_css_class("main-column");
+    main_column.set_hexpand(true);
+    main_column.set_vexpand(true);
+    let topbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    topbar.add_css_class("topbar");
+    let page_title = gtk::Label::new(Some("Chats"));
+    page_title.add_css_class("page-title");
+    topbar.append(&page_title);
+    let service_status = gtk::Label::new(Some("Session-only • local files read-only"));
+    service_status.add_css_class("status-chip");
+    service_status.set_hexpand(true);
+    service_status.set_halign(gtk::Align::End);
+    topbar.append(&service_status);
+    let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
+    settings_button.set_tooltip_text(Some("Connection and permissions"));
+    topbar.append(&settings_button);
+    main_column.append(&topbar);
+
+    let stack = gtk::Stack::new();
+    stack.set_hexpand(true);
+    stack.set_vexpand(true);
+    let chat_page = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    chat_page.add_css_class("page-content");
+
+    let assistant_identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    assistant_identity.set_halign(gtk::Align::Center);
+    assistant_identity.add_css_class("assistant-identity");
+    let assistant_avatar = gtk::Label::new(Some("M"));
+    assistant_avatar.add_css_class("assistant-avatar");
+    let assistant_name = gtk::Label::new(Some("Muse"));
+    assistant_name.add_css_class("assistant-name");
+    assistant_identity.append(&assistant_avatar);
+    assistant_identity.append(&assistant_name);
+    chat_page.append(&assistant_identity);
+
+    let setup_expander = gtk::Expander::new(Some("Connection & permissions"));
+    setup_expander.add_css_class("settings-disclosure");
+    setup_expander.set_expanded(false);
+    let setup_content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    setup_content.add_css_class("settings-content");
     let disclaimer = gtk::Label::new(Some(
-        "Unofficial, open-source client. Not affiliated with Meta. This early build uses a custom Linux UI and local integrations; it does not embed the Muse website.",
+        "Independent, open-source Linux client; not affiliated with Meta. This is a native GTK app, not an embedded Muse website.",
     ));
     disclaimer.set_wrap(true);
     disclaimer.set_xalign(0.0);
     disclaimer.add_css_class("dim-label");
-    root.append(&disclaimer);
+    setup_content.append(&disclaimer);
 
     let connection = gtk::Label::new(Some(
         "Meta Model API uses a developer key and is separate from consumer Muse sign-in. Prompts are sent only after you submit with paid-use consent enabled; charges may apply.",
@@ -91,11 +214,7 @@ fn build_ui(app: &gtk::Application) {
     connection.set_xalign(0.0);
     connection.set_wrap(true);
     connection.add_css_class("card");
-    root.append(&connection);
-
-    let api_key: SharedApiKey = Rc::new(RefCell::new(None));
-    let session: SharedSession = Rc::new(RefCell::new(AgentSession::new()));
-    let agent_busy = Rc::new(Cell::new(false));
+    setup_content.append(&connection);
 
     let credential_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let key_entry = gtk::Entry::new();
@@ -107,57 +226,71 @@ fn build_ui(app: &gtk::Application) {
     credential_row.append(&key_entry);
     credential_row.append(&use_key);
     credential_row.append(&clear_session);
-    root.append(&credential_row);
+    setup_content.append(&credential_row);
 
     let billing_consent = gtk::CheckButton::with_label(
         "Allow paid Meta Model API requests; prompts leave this device and may be billed.",
     );
     billing_consent.set_halign(gtk::Align::Start);
-    root.append(&billing_consent);
+    setup_content.append(&billing_consent);
 
     let file_search_consent = gtk::CheckButton::with_label(
         "Allow searching the granted folder; matching file names and paths may be sent to Meta.",
     );
     file_search_consent.set_sensitive(false);
     file_search_consent.set_halign(gtk::Align::Start);
-    root.append(&file_search_consent);
+    setup_content.append(&file_search_consent);
 
     let file_content_consent = gtk::CheckButton::with_label(
         "Allow reading granted text files; up to 16 KiB per read may be sent to Meta.",
     );
     file_content_consent.set_sensitive(false);
     file_content_consent.set_halign(gtk::Align::Start);
-    root.append(&file_content_consent);
+    setup_content.append(&file_content_consent);
+    setup_expander.set_child(Some(&setup_content));
+    chat_page.append(&setup_expander);
 
-    let chat_history = gtk::TextView::new();
-    chat_history.set_editable(false);
-    chat_history.set_cursor_visible(false);
-    chat_history.set_wrap_mode(gtk::WrapMode::WordChar);
-    chat_history
-        .buffer()
-        .set_text("Assistant: Enter a Meta Model API developer key to start. The key and conversation are session-only.");
+    let chat_history = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    chat_history.set_vexpand(true);
+    chat_history.set_valign(gtk::Align::End);
+    append_chat(
+        &chat_history,
+        ChatRole::Assistant,
+        "Welcome. Open Connection & permissions to set up a developer key. The key and chat stay in memory for this session.",
+    );
     let chat_scroll = gtk::ScrolledWindow::builder()
         .hexpand(true)
-        .min_content_height(130)
+        .vexpand(true)
+        .min_content_height(320)
         .build();
+    chat_scroll.add_css_class("chat-scroll");
     chat_scroll.set_child(Some(&chat_history));
-    root.append(&chat_scroll);
+    chat_page.append(&chat_scroll);
 
     let chat_status = gtk::Label::new(Some("No API key is active."));
     chat_status.set_xalign(0.0);
     chat_status.set_wrap(true);
-    chat_status.add_css_class("dim-label");
-    root.append(&chat_status);
+    chat_status.add_css_class("chat-status");
+    chat_page.append(&chat_status);
 
     let prompt_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    prompt_row.add_css_class("composer");
+    let open_files = gtk::Button::from_icon_name("list-add-symbolic");
+    open_files.set_tooltip_text(Some("Open local read-only file browser"));
+    prompt_row.append(&open_files);
     let prompt_entry = gtk::Entry::new();
     prompt_entry.set_hexpand(true);
-    prompt_entry.set_placeholder_text(Some("Ask Muse…"));
+    prompt_entry.set_placeholder_text(Some("Message Muse…"));
+    prompt_row.append(&prompt_entry);
     let send_prompt = gtk::Button::with_label("Send");
     send_prompt.add_css_class("suggested-action");
-    prompt_row.append(&prompt_entry);
     prompt_row.append(&send_prompt);
-    root.append(&prompt_row);
+    chat_page.append(&prompt_row);
+
+    stack.add_named(&chat_page, Some("chats"));
+    main_column.append(&stack);
+    shell.append(&sidebar);
+    shell.append(&main_column);
 
     let api_key_for_set = Rc::clone(&api_key);
     let session_for_set = Rc::clone(&session);
@@ -178,7 +311,7 @@ fn build_ui(app: &gtk::Application) {
         billing_for_set.set_active(false);
         search_consent_for_set.set_active(false);
         content_consent_for_set.set_active(false);
-        history_for_set.buffer().set_text("");
+        clear_chat(&history_for_set);
         entry_for_set.set_text("");
         status_for_set.set_text("Key held in memory only. No request is made until you send a prompt with paid-use consent enabled.");
     });
@@ -197,7 +330,7 @@ fn build_ui(app: &gtk::Application) {
         billing_for_clear.set_active(false);
         search_consent_for_clear.set_active(false);
         content_consent_for_clear.set_active(false);
-        history_for_clear.buffer().set_text("");
+        clear_chat(&history_for_clear);
         entry_for_clear.set_text("");
         status_for_clear.set_text("API key and conversation cleared from this session.");
     });
@@ -243,7 +376,7 @@ fn build_ui(app: &gtk::Application) {
             read_file_contents: content_consent_for_send.is_active(),
         };
         let mut worker_session = session_for_send.borrow().clone();
-        append_chat(&history_for_send.buffer(), "You", &prompt);
+        append_chat(&history_for_send, ChatRole::User, &prompt);
         prompt_for_send.set_text("");
         busy_for_send.set(true);
         prompt_for_send.set_sensitive(false);
@@ -301,15 +434,15 @@ fn build_ui(app: &gtk::Application) {
                         match result {
                             Ok(response) => {
                                 if let Some(reason) = response.context_reset.as_deref() {
-                                    history.buffer().set_text("");
-                                    append_chat(&history.buffer(), "Notice", reason);
-                                    append_chat(&history.buffer(), "You", &submitted_prompt);
+                                    clear_chat(&history);
+                                    append_chat(&history, ChatRole::Notice, reason);
+                                    append_chat(&history, ChatRole::User, &submitted_prompt);
                                 }
-                                append_chat(&history.buffer(), "Muse", &response.text);
+                                append_chat(&history, ChatRole::Assistant, &response.text);
                                 status.set_text("Response complete. Conversation remains in memory until cleared or the app closes.");
                             }
                             Err(error) => {
-                                append_chat(&history.buffer(), "Request failed", &error);
+                                append_chat(&history, ChatRole::Notice, &error);
                                 status.set_text("Request failed. The API key and chat remain session-only.");
                             }
                         }
@@ -350,6 +483,20 @@ fn build_ui(app: &gtk::Application) {
         });
     });
 
+    let files_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    files_page.add_css_class("page-content");
+    let files_heading = gtk::Label::new(Some("Local files"));
+    files_heading.set_xalign(0.0);
+    files_heading.add_css_class("title-2");
+    files_page.append(&files_heading);
+    let files_explanation = gtk::Label::new(Some(
+        "Browse and preview locally. Folder grants are read-only, session-scoped, and separate from sharing consent.",
+    ));
+    files_explanation.set_xalign(0.0);
+    files_explanation.set_wrap(true);
+    files_explanation.add_css_class("dim-label");
+    files_page.append(&files_explanation);
+
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let choose_folder = gtk::Button::with_label("Grant read access to a folder…");
     choose_folder.add_css_class("suggested-action");
@@ -358,20 +505,20 @@ fn build_ui(app: &gtk::Application) {
     location.set_selectable(true);
     toolbar.append(&choose_folder);
     toolbar.append(&location);
-    root.append(&toolbar);
+    files_page.append(&toolbar);
 
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search file names in the granted folder")
         .sensitive(false)
         .build();
-    root.append(&search);
+    files_page.append(&search);
 
     let status = gtk::Label::new(Some(
         "Choose a folder to browse it. Access is read-only and remains in memory for this session.",
     ));
     status.set_xalign(0.0);
     status.set_wrap(true);
-    root.append(&status);
+    files_page.append(&status);
 
     let panes = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     panes.set_vexpand(true);
@@ -405,7 +552,7 @@ fn build_ui(app: &gtk::Application) {
 
     panes.append(&file_scroll);
     panes.append(&preview_scroll);
-    root.append(&panes);
+    files_page.append(&panes);
 
     let grant_for_dialog = Rc::clone(&grant);
     let directory_for_dialog = Rc::clone(&current_directory);
@@ -516,13 +663,125 @@ fn build_ui(app: &gtk::Application) {
         }
     });
 
-    window.set_child(Some(&root));
+    stack.add_named(&files_page, Some("files"));
+
+    let stack_for_chats = stack.clone();
+    let title_for_chats = page_title.clone();
+    let chats_for_chats = chats_nav.clone();
+    let files_for_chats = files_nav.clone();
+    chats_nav.connect_clicked(move |_| {
+        select_page(
+            &stack_for_chats,
+            &title_for_chats,
+            &chats_for_chats,
+            &files_for_chats,
+            "chats",
+        );
+    });
+
+    let stack_for_files = stack.clone();
+    let title_for_files = page_title.clone();
+    let chats_for_files = chats_nav.clone();
+    let files_for_files = files_nav.clone();
+    files_nav.connect_clicked(move |_| {
+        select_page(
+            &stack_for_files,
+            &title_for_files,
+            &chats_for_files,
+            &files_for_files,
+            "files",
+        );
+    });
+
+    let stack_for_open_files = stack.clone();
+    let title_for_open_files = page_title.clone();
+    let chats_for_open_files = chats_nav.clone();
+    let files_for_open_files = files_nav.clone();
+    open_files.connect_clicked(move |_| {
+        select_page(
+            &stack_for_open_files,
+            &title_for_open_files,
+            &chats_for_open_files,
+            &files_for_open_files,
+            "files",
+        );
+    });
+
+    let stack_for_settings = stack.clone();
+    let title_for_settings = page_title.clone();
+    let chats_for_settings = chats_nav.clone();
+    let files_for_settings = files_nav.clone();
+    let setup_for_settings = setup_expander.clone();
+    settings_button.connect_clicked(move |_| {
+        select_page(
+            &stack_for_settings,
+            &title_for_settings,
+            &chats_for_settings,
+            &files_for_settings,
+            "chats",
+        );
+        setup_for_settings.set_expanded(true);
+    });
+
+    window.set_child(Some(&shell));
     window.present();
 }
 
-fn append_chat(buffer: &gtk::TextBuffer, speaker: &str, message: &str) {
-    let mut end = buffer.end_iter();
-    buffer.insert(&mut end, &format!("{speaker}: {message}\n\n"));
+fn select_page(
+    stack: &gtk::Stack,
+    title: &gtk::Label,
+    chats_nav: &gtk::Button,
+    files_nav: &gtk::Button,
+    page: &str,
+) {
+    let is_chats = page == "chats";
+    stack.set_visible_child_name(page);
+    title.set_text(if is_chats { "Chats" } else { "Files" });
+    chats_nav.set_css_classes(if is_chats {
+        &["rail-button", "active"]
+    } else {
+        &["rail-button"]
+    });
+    files_nav.set_css_classes(if is_chats {
+        &["rail-button"]
+    } else {
+        &["rail-button", "active"]
+    });
+}
+
+fn append_chat(container: &gtk::Box, role: ChatRole, message: &str) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.set_hexpand(true);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.set_margin_top(4);
+    row.set_margin_bottom(4);
+
+    let bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bubble.set_halign(match bubble_alignment(role) {
+        BubbleAlignment::Start => gtk::Align::Start,
+        BubbleAlignment::End => gtk::Align::End,
+    });
+    bubble.add_css_class("chat-bubble");
+    bubble.add_css_class(match role {
+        ChatRole::User => "user",
+        ChatRole::Assistant => "assistant",
+        ChatRole::Notice => "notice",
+    });
+    let label = gtk::Label::new(Some(message));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.set_selectable(true);
+    label.set_max_width_chars(88);
+    bubble.append(&label);
+    row.append(&bubble);
+    container.append(&row);
+}
+
+fn clear_chat(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
 }
 
 fn render_search_results(
@@ -705,6 +964,22 @@ mod tests {
         fn drop(&mut self) {
             self.0.set(self.0.get() + 1);
         }
+    }
+
+    #[test]
+    fn chat_message_roles_place_user_on_right_and_assistant_on_left() {
+        assert_eq!(
+            super::bubble_alignment(super::ChatRole::User),
+            super::BubbleAlignment::End
+        );
+        assert_eq!(
+            super::bubble_alignment(super::ChatRole::Assistant),
+            super::BubbleAlignment::Start
+        );
+        assert_eq!(
+            super::bubble_alignment(super::ChatRole::Notice),
+            super::BubbleAlignment::Start
+        );
     }
 
     #[test]

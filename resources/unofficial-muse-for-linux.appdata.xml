@@ -7,7 +7,7 @@
   <project_license>GPL-3.0-only</project_license>
   <description>
     <p>A native GTK4 desktop shell for exploring Linux-local integrations with an assistant backend kept replaceable.</p>
-    <p>The current prototype includes a session-only, read-only folder grant and bounded UTF-8 text preview. Consumer Muse account compatibility has not been validated.</p>
+    <p>The current prototype includes a session-only, read-only folder grant and bounded UTF-8 text preview. Muse.ai account pairing is not implemented; the experimental developer API path does not provide it. Meta's Linux Device SDK is unsupported and its distribution terms are under review.</p>
   </description>
   <launchable type="desktop-id">unofficial-muse-for-linux.desktop</launchable>
   <url type="homepage">https://github.com/kyth-os/unofficial-muse-for-linux</url>
