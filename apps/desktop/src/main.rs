@@ -3,6 +3,7 @@ use gtk4 as gtk;
 mod account_login;
 mod account_ui;
 mod desktop_ui;
+mod files_write_ui;
 mod local_host;
 mod mail_ui;
 mod tasks_ui;
@@ -678,6 +679,38 @@ fn build_ui(app: &gtk::Application) {
     panes.append(&file_scroll);
     panes.append(&preview_scroll);
     files_page.append(&panes);
+
+    // Confined file writes: separate grant + per-op confirmation, owned by
+    // the write module; the host only wires its dialog lease and list refresh.
+    {
+        let list = file_list.clone();
+        let preview = preview.clone();
+        let status_label = status.clone();
+        let grant_state = Rc::clone(&grant);
+        let directory_state = Rc::clone(&current_directory);
+        let refresh: Rc<dyn Fn()> = Rc::new(move || {
+            render_directory(
+                &list,
+                &preview,
+                &status_label,
+                &grant_state,
+                &directory_state,
+            );
+        });
+        let lease_for_active = active_dialog.active.clone();
+        let lease_for_acquire = active_dialog.active.clone();
+        let lease_for_release = active_dialog.active.clone();
+        let guard = files_write_ui::DialogGuard {
+            is_active: Rc::new(move || lease_for_active.borrow().is_some()),
+            acquire: Rc::new(move |dialog: gtk::FileChooserNative| {
+                *lease_for_acquire.borrow_mut() = Some(dialog);
+            }),
+            release: Rc::new(move || {
+                *lease_for_release.borrow_mut() = None;
+            }),
+        };
+        files_page.append(&files_write_ui::build_section(&window, guard, refresh));
+    }
 
     let grant_for_dialog = Rc::clone(&grant);
     let directory_for_dialog = Rc::clone(&current_directory);
