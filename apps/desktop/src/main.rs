@@ -86,7 +86,7 @@ scrolledwindow viewport { background-color: transparent; }
 .settings-disclosure { background-color: #191c23; border: 1px solid #292d37; border-radius: 14px; padding: 10px 14px; }
 .welcome-card { background-color: #1b2637; border: 1px solid #31445f; border-radius: 16px; padding: 20px; }
 .welcome-title { color: #f3f5f8; font-size: 22px; font-weight: 700; }
-.welcome-card > label { color: #c7d1df; }
+.welcome-copy { color: #c7d1df; }
 .settings-content { padding: 10px 2px 4px; }
 .toolbar { }
 .chat-bubble { padding: 12px 16px; border-radius: 16px; font-size: 14px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
@@ -988,6 +988,8 @@ fn nav_button(icon_name: &str, label: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_tooltip_text(Some(tooltip));
     button.add_css_class("nav-item");
+    button.set_hexpand(true);
+    button.set_halign(gtk::Align::Fill);
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let icon = gtk::Image::from_icon_name(icon_name);
     icon.add_css_class("nav-icon");
@@ -1339,6 +1341,7 @@ mod tests {
             "settings-disclosure",
             "welcome-card",
             "welcome-title",
+            "welcome-copy",
             "settings-content",
             "toolbar",
             "chat-bubble",

@@ -517,9 +517,11 @@ mod native {
         let welcome_title = label("Connect your Muse account");
         welcome_title.add_css_class("welcome-title");
         welcome.append(&welcome_title);
-        welcome.append(&label(
+        let welcome_copy = label(
             "Use your existing personal Muse agent here. Chats and scheduled tasks stay tied to that account; this app does not create a separate developer assistant.",
-        ));
+        );
+        welcome_copy.add_css_class("welcome-copy");
+        welcome.append(&welcome_copy);
         let open_settings = gtk::Button::with_label("Set up connection");
         open_settings.add_css_class("suggested-action");
         open_settings.set_halign(gtk::Align::Start);
@@ -1556,6 +1558,11 @@ print(json.dumps({'ok':True,'data':data}))
             gtk::init().unwrap();
             let chip = gtk::Label::new(None);
             let page = build(&chip);
+            assert!(page.ui.welcome.is_visible());
+            assert!(!page.ui.pages.is_visible());
+            assert!(!page.ui.settings.is_expanded());
+            button(&page.root, "Set up connection").emit_clicked();
+            assert!(page.ui.settings.is_expanded());
             let window = gtk::Window::builder()
                 .default_width(1240)
                 .default_height(900)
@@ -1594,7 +1601,7 @@ print(json.dumps({'ok':True,'data':data}))
             button(&page.root, "Connect").emit_clicked();
             assert!(!entries[0].is_sensitive());
             pump_until(|| has_label(&page.root, "Connection failed:"));
-            assert!(chip.text().contains("disconnected"));
+            assert!(chip.text().contains("Not connected"));
             assert!(entries[0].is_sensitive());
             assert!(!entries[2].is_sensitive());
             button(&page.root, "Connect").emit_clicked();
