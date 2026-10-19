@@ -4,7 +4,7 @@ use muse_local_link::HostEvent;
 use muse_local_link::{HostConfig, HostSession};
 use muse_local_tools::{ApprovalRequest, Decision, Invocation, ToolBroker, ToolReply};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{atomic::AtomicUsize, mpsc},
     time::{Duration, Instant},
@@ -19,7 +19,50 @@ struct Card {
 }
 enum Completed {
     Grant(Result<(), &'static str>),
-    Operation(Decision, PathBuf, String, Instant),
+    Operation(Decision, PathBuf, String, Instant, String),
+}
+/// Session activity log capacity: oldest entries are dropped first.
+const MAX_LOG: usize = 64;
+/// UTC clock label for log entries (HH:MM:SS); std-only, no new deps.
+fn now_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{:02}:{:02}:{:02} UTC",
+        secs / 3600 % 24,
+        secs / 60 % 60,
+        secs % 60
+    )
+}
+/// Remote-controlled command names are allow-listed so a hostile command
+/// string (paths, content) can never reach the log.
+fn safe_command(raw: &str) -> &str {
+    match raw {
+        "files.search" | "files.read_text" | "files.create_text" => raw,
+        _ => "unknown-command",
+    }
+}
+/// Broker outcome codes are fixed strings; still filtered so only
+/// code-shaped text is ever logged (never content or paths).
+fn safe_code(raw: &str) -> String {
+    let code: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(32)
+        .collect();
+    if code.is_empty() { "err".into() } else { code }
+}
+/// Relative paths are already broker-validated (strict, no leading slash,
+/// no `.`/`..`); truncated and de-slashed defensively.
+fn safe_path(raw: &str) -> String {
+    let path: String = raw.trim_start_matches('/').chars().take(256).collect();
+    if path.is_empty() {
+        "(invalid-path)".into()
+    } else {
+        path
+    }
 }
 struct Completion {
     epoch: u64,
@@ -57,6 +100,8 @@ struct Controller {
     identity: Option<DeviceLease>,
     cards: Vec<Card>,
     replies: VecDeque<ToolReply>,
+    log: VecDeque<String>,
+    cmds: HashMap<String, String>,
     workers: Arc<AtomicUsize>,
     tx: mpsc::SyncSender<Completion>,
     rx: mpsc::Receiver<Completion>,
@@ -73,6 +118,8 @@ impl Controller {
             identity: None,
             cards: Vec::new(),
             replies: VecDeque::new(),
+            log: VecDeque::new(),
+            cmds: HashMap::new(),
             workers: Arc::new(AtomicUsize::new(0)),
             tx,
             rx,
@@ -84,6 +131,39 @@ impl Controller {
             .as_ref()
             .filter(|_| self.phase == Phase::Registered)
             .cloned()
+    }
+    fn push_log(&mut self, entry: String) {
+        if self.log.len() >= MAX_LOG {
+            self.log.pop_front();
+        }
+        self.log.push_back(entry);
+    }
+    fn clear_log(&mut self) {
+        // Display only: cards, replies, grants, epoch are untouched.
+        self.log.clear();
+    }
+    fn grant_label(&self, grant_id: &str) -> String {
+        // Labels are broker-minted ("Folder N"); the raw grant id (a
+        // capability token) is never logged.
+        self.broker
+            .grants()
+            .into_iter()
+            .find(|g| g.id == grant_id)
+            .map(|g| g.label)
+            .unwrap_or_else(|| "ungranted".into())
+    }
+    fn outcome(reply: &ToolReply) -> String {
+        if reply.ok {
+            "ok".into()
+        } else {
+            format!("err {}", safe_code(reply.error.as_deref().unwrap_or("err")))
+        }
+    }
+    fn logged_command(&self, invocation_id: &str) -> String {
+        self.cmds
+            .get(invocation_id)
+            .map(|c| safe_command(c).to_owned())
+            .unwrap_or_else(|| "unknown-command".into())
     }
     fn start(&mut self, config: Option<BridgeConfig>, consent: bool) -> Result<(), &'static str> {
         if !consent
@@ -179,10 +259,18 @@ impl Controller {
             .unwrap_or_default();
         let deadline = Instant::now() + Duration::from_millis(invocation.timeout_ms.min(120000));
         let broker = self.broker.clone();
+        let command = invocation.command.clone();
+        let label = self.grant_label(&grant_id);
+        self.push_log(format!(
+            "{} received {} · {}",
+            now_hms(),
+            safe_command(&command),
+            label
+        ));
         if self
             .work(move || {
                 let decision = run_invocation(&broker, invocation, deadline);
-                Completed::Operation(decision, root, grant_id, deadline)
+                Completed::Operation(decision, root, grant_id, deadline, command)
             })
             .is_err()
         {
@@ -202,6 +290,13 @@ impl Controller {
             .ok_or("Approval expired or revoked.")?;
         let broker = self.broker.clone();
         let id = id.to_owned();
+        let path = safe_path(&self.cards[index].request.path);
+        self.push_log(format!(
+            "{} approval {} · {}",
+            now_hms(),
+            if allow { "allowed once" } else { "denied" },
+            path
+        ));
         self.work(move || {
             Completed::Operation(
                 Decision::Reply(if allow {
@@ -212,6 +307,7 @@ impl Controller {
                 PathBuf::new(),
                 String::new(),
                 Instant::now(),
+                String::new(),
             )
         })?;
         self.cards[index].deciding = true;
@@ -248,16 +344,39 @@ impl Controller {
                         Err(e) => e.into(),
                     }
                 }
-                Completed::Operation(decision, root, grant_id, deadline)
+                Completed::Operation(decision, root, grant_id, deadline, command)
                     if self.phase == Phase::Registered =>
                 {
                     match decision {
                         Decision::Reply(reply) => {
+                            if !command.is_empty() {
+                                self.cmds.entry(reply.id.clone()).or_insert(command);
+                            }
+                            let what = self.logged_command(&reply.id);
+                            let outcome = Self::outcome(&reply);
+                            self.push_log(format!(
+                                "{} auto-replied {} · {}",
+                                now_hms(),
+                                what,
+                                outcome
+                            ));
                             self.cards.retain(|c| c.request.invocation_id != reply.id);
                             self.replies.push_back(reply);
                         }
                         Decision::Approval(request) => {
                             if Instant::now() < deadline {
+                                if !command.is_empty() {
+                                    self.cmds
+                                        .entry(request.invocation_id.clone())
+                                        .or_insert(command);
+                                }
+                                let what = self.logged_command(&request.invocation_id);
+                                self.push_log(format!(
+                                    "{} approval requested {} · {}",
+                                    now_hms(),
+                                    what,
+                                    safe_path(&request.path)
+                                ));
                                 self.cards.push(Card {
                                     request,
                                     root,
@@ -274,6 +393,18 @@ impl Controller {
         }
         if self.phase == Phase::Registered {
             for reply in self.broker.expire() {
+                if let Some(card) = self
+                    .cards
+                    .iter()
+                    .find(|c| c.request.invocation_id == reply.id)
+                {
+                    self.push_log(format!(
+                        "{} approval expired {} · {}",
+                        now_hms(),
+                        self.logged_command(&reply.id),
+                        safe_path(&card.request.path)
+                    ));
+                }
                 self.cards.retain(|c| c.request.invocation_id != reply.id);
                 self.replies.push_back(reply);
             }
@@ -288,6 +419,9 @@ impl Controller {
                 let Some(session) = self.session.as_ref() else {
                     break;
                 };
+                let rid = reply.id.clone();
+                let what = self.logged_command(&rid);
+                let outcome = Self::outcome(reply);
                 match session.send_result(
                     &reply.id,
                     reply.ok,
@@ -296,6 +430,8 @@ impl Controller {
                 ) {
                     Ok(()) => {
                         self.replies.pop_front();
+                        self.cmds.remove(&rid);
+                        self.push_log(format!("{} reply sent {} · {}", now_hms(), what, outcome));
                     }
                     Err(e) if matches!(e.code, "busy" | "queue_full") => break,
                     Err(e) if e.code == "request_too_large" => {
@@ -304,8 +440,15 @@ impl Controller {
                         reply.output = serde_json::Value::Null;
                         reply.error = Some("result_too_large".into());
                     }
-                    Err(_) => {
+                    Err(e) => {
                         self.replies.pop_front();
+                        self.cmds.remove(&rid);
+                        self.push_log(format!(
+                            "{} reply dropped {} · {}",
+                            now_hms(),
+                            what,
+                            safe_code(e.code)
+                        ));
                     }
                 }
             }
@@ -331,8 +474,18 @@ impl Controller {
         }
         self.epoch = self.epoch.wrapping_add(1);
         self.phase = Phase::Disconnected;
+        let revoked = self.cards.len();
         self.cards.clear();
         self.replies.clear();
+        self.cmds.clear();
+        // Session-only: prior entries reset with the cards/replies; only the
+        // revoke/stop boundary marker survives, capped like the rest.
+        self.log.clear();
+        self.push_log(format!(
+            "{} stopped · grants revoked · {} pending approval(s) revoked",
+            now_hms(),
+            revoked
+        ));
         self.notice =
             "Disconnected. Grants revoked; new consent, folders and Start are required.".into();
         self.broker.revoke_all();
@@ -397,6 +550,9 @@ mod native {
         status: gtk::Label,
         grants: gtk::Label,
         cards: gtk::Box,
+        activity: gtk::Box,
+        clear: gtk::Button,
+        rendered_log: RefCell<(usize, String)>,
         pub(super) dialog: crate::DialogLease<gtk::FileChooserNative>,
         pub(super) widgets: RefCell<Vec<CardWidgets>>,
     }
@@ -446,6 +602,16 @@ mod native {
             .build();
         scroll.set_child(Some(&cards));
         root.append(&scroll);
+        let activity_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let activity_heading = label("Session activity · redacted (commands and outcomes only)");
+        activity_heading.add_css_class("section-heading");
+        activity_heading.set_hexpand(true);
+        let clear = gtk::Button::with_label("Clear log");
+        activity_row.append(&activity_heading);
+        activity_row.append(&clear);
+        root.append(&activity_row);
+        let activity = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        root.append(&activity);
         let ui = Rc::new(Ui {
             host: RefCell::new(Controller::new()),
             context,
@@ -458,6 +624,9 @@ mod native {
             status,
             grants,
             cards,
+            activity,
+            clear,
+            rendered_log: RefCell::new((0, String::new())),
             dialog: crate::DialogLease::default(),
             widgets: RefCell::new(Vec::new()),
         });
@@ -493,6 +662,13 @@ mod native {
         ui.stop.connect_clicked(move |_| {
             if let Some(u) = weak.upgrade() {
                 u.shutdown();
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.clear.connect_clicked(move |_| {
+            if let Some(u) = weak.upgrade() {
+                u.host.borrow_mut().clear_log();
+                u.render();
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -725,6 +901,16 @@ mod native {
                 });
                 // Read-only even if a theme or focus action changes widget state.
                 widgets.content.set_editable(false);
+            }
+            let fingerprint = (host.log.len(), host.log.back().cloned().unwrap_or_default());
+            if *self.rendered_log.borrow() != fingerprint {
+                crate::clear_chat(&self.activity);
+                for entry in &host.log {
+                    let row = label(entry);
+                    row.add_css_class("dim-label");
+                    self.activity.append(&row);
+                }
+                *self.rendered_log.borrow_mut() = fingerprint;
             }
         }
     }
@@ -1007,6 +1193,7 @@ for line in sys.stdin:
                         f.0.clone(),
                         "old".into(),
                         Instant::now() + Duration::from_secs(60),
+                        "files.create_text".into(),
                     ),
                 })
                 .unwrap();
@@ -1027,5 +1214,97 @@ for line in sys.stdin:
         assert_eq!(host.phase, Phase::Disconnected);
         assert!(host.device().is_none());
         assert!(host.broker.grants().is_empty());
+    }
+    #[test]
+    fn activity_log_records_redacted_lifecycle_and_resets_on_stop() {
+        let f = Fixture::new("files.create_text", "exact full content\n", 30000);
+        let mut host = Controller::new();
+        host.grant(f.0.clone(), true).unwrap();
+        pump(&mut host, |h| !h.broker.grants().is_empty());
+        host.start(Some(f.config()), true).unwrap();
+        pump(&mut host, |h| !h.cards.is_empty());
+        let approval_id = host.cards[0].request.approval_id.clone();
+        host.decide(&approval_id, true).unwrap();
+        pump(&mut host, |_| f.0.join("new.txt").exists());
+        pump(&mut host, |h| {
+            h.replies.is_empty() && h.log.iter().any(|e| e.contains("reply sent"))
+        });
+        assert!(
+            host.log
+                .iter()
+                .any(|e| e.contains("received") && e.contains("files.create_text"))
+        );
+        assert!(
+            host.log
+                .iter()
+                .any(|e| e.contains("approval requested") && e.contains("new.txt"))
+        );
+        assert!(host.log.iter().any(|e| e.contains("allowed once")));
+        assert!(host.log.iter().any(|e| e.contains("auto-replied")));
+        assert!(host.log.iter().any(|e| e.contains("reply sent")));
+        let root = f.0.to_string_lossy().into_owned();
+        for entry in &host.log {
+            assert!(
+                !entry.contains("exact full content"),
+                "content leaked: {entry}"
+            );
+            assert!(
+                !entry.contains(&root as &str),
+                "absolute path leaked: {entry}"
+            );
+            assert!(
+                !entry.contains(&approval_id as &str),
+                "token leaked: {entry}"
+            );
+        }
+        host.stop();
+        assert!(host.cards.is_empty());
+        assert!(host.replies.is_empty());
+        assert!(
+            !host.log.iter().any(|e| e.contains("received")),
+            "stop must reset prior session entries"
+        );
+        assert!(host.log.iter().any(|e| e.contains("grants revoked")));
+    }
+    #[test]
+    fn activity_log_records_expiry_and_caps_oldest() {
+        let f = Fixture::new("files.create_text", "never", 500);
+        let mut host = Controller::new();
+        host.grant(f.0.clone(), true).unwrap();
+        pump(&mut host, |h| !h.broker.grants().is_empty());
+        host.start(Some(f.config()), true).unwrap();
+        pump(&mut host, |h| !h.cards.is_empty());
+        std::thread::sleep(Duration::from_millis(550));
+        host.poll();
+        assert!(host.log.iter().any(|e| e.contains("approval expired")));
+        for i in 0..80 {
+            host.push_log(format!("pad-{i}"));
+        }
+        assert_eq!(host.log.len(), 64);
+        assert!(!host.log.iter().any(|e| e.contains("approval expired")));
+        assert!(host.log.back().unwrap().contains("pad-79"));
+        host.stop();
+    }
+    #[test]
+    fn activity_log_records_revoke_boundary_and_clear_is_display_only() {
+        let f = Fixture::new("files.create_text", "never", 30000);
+        let mut host = Controller::new();
+        host.grant(f.0.clone(), true).unwrap();
+        pump(&mut host, |h| !h.broker.grants().is_empty());
+        host.start(Some(f.config()), true).unwrap();
+        pump(&mut host, |h| !h.cards.is_empty());
+        let epoch = host.epoch;
+        host.clear_log();
+        assert!(host.log.is_empty());
+        assert!(!host.cards.is_empty(), "clear must not touch approvals");
+        assert!(
+            !host.broker.grants().is_empty(),
+            "clear must not touch grants"
+        );
+        assert_eq!(host.epoch, epoch, "clear must not touch epoch");
+        host.stop();
+        assert_eq!(host.log.len(), 1);
+        assert!(host.log[0].contains("1 pending approval(s) revoked"));
+        assert!(host.cards.is_empty());
     }
 }

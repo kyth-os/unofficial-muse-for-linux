@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Muse tabs</title>
+<style>
+  body { font: 13px system-ui, sans-serif; width: 360px; margin: 12px; }
+  input { width: 100%; box-sizing: border-box; margin: 4px 0; }
+  button { margin: 4px 4px 4px 0; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  td, th { border: 1px solid #ccc; padding: 2px 6px; text-align: left; }
+  pre { white-space: pre-wrap; word-break: break-all; color: #a00; }
+</style>
+</head>
+<body>
+<h3>Muse tabs (local bridge)</h3>
+<button id="list">List tabs</button>
+<div>
+  <input id="openUrl" type="url" placeholder="https://example.com/">
+  <button id="open">Open URL</button>
+</div>
+<div>
+  <input id="closeId" type="number" min="0" placeholder="tab id">
+  <button id="close">Close tab</button>
+</div>
+<table id="tabs" hidden><thead><tr><th>id</th><th>title</th><th>url</th></tr></thead><tbody></tbody></table>
+<pre id="err"></pre>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -985,6 +985,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "muse-browser"
+version = "0.1.0"
+
+[[package]]
 name = "muse-calendar"
 version = "0.1.0"
 dependencies = [

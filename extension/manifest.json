@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Muse Browser Bridge (unofficial)",
+  "version": "0.1",
+  "description": "User-gesture tab list/open/close relayed to the local Muse native host. No remote control, no content access.",
+  "permissions": ["tabs"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Muse tabs",
+    "default_popup": "popup.html"
+  }
+}
