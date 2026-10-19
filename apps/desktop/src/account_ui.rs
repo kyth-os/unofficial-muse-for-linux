@@ -47,6 +47,10 @@ enum SendOutcome {
     Uncertain(String),
 }
 
+fn account_surface_visibility(connected: bool) -> (bool, bool) {
+    (connected, !connected)
+}
+
 pub(crate) fn login_error_message(code: &str) -> &'static str {
     match code {
         "invalid_request" => "Sign-in helper rejected the selected account directory.",
@@ -90,7 +94,8 @@ impl<A, H, T> Default for Controller<A, H, T> {
             scope: None,
             limit: 50,
             connection_notice:
-                "Not connected. Select a session and explicitly consent before connecting.".into(),
+                "Ready when you are. Set up the connection above to load chats and reminders."
+                    .into(),
             history_notice: "No shared history requested.".into(),
             tasks_notice: "No scheduled-task history requested.".into(),
             send_notice: String::new(),
@@ -404,6 +409,8 @@ mod native {
         login_cancellation: RefCell<Option<Arc<Cancellation>>>,
         rendering: Cell<bool>,
         root: gtk::Box,
+        welcome: gtk::Box,
+        pages: gtk::Notebook,
         settings: gtk::Expander,
         python: gtk::Entry,
         config_dir: gtk::Entry,
@@ -504,13 +511,27 @@ mod native {
     pub fn build(chip: &gtk::Label) -> AccountPage {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("page-content");
-        root.append(&label("Your Muse account · shared conversations & tasks"));
+
+        let welcome = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        welcome.add_css_class("welcome-card");
+        let welcome_title = label("Connect your Muse account");
+        welcome_title.add_css_class("welcome-title");
+        welcome.append(&welcome_title);
+        welcome.append(&label(
+            "Use your existing personal Muse agent here. Chats and scheduled tasks stay tied to that account; this app does not create a separate developer assistant.",
+        ));
+        let open_settings = gtk::Button::with_label("Set up connection");
+        open_settings.add_css_class("suggested-action");
+        open_settings.set_halign(gtk::Align::Start);
+        welcome.append(&open_settings);
+        root.append(&welcome);
+
         let settings = gtk::Expander::new(Some("Account connection & sign-in"));
         settings.add_css_class("settings-disclosure");
-        settings.set_expanded(true);
+        settings.set_expanded(false);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
         content.add_css_class("settings-content");
-        content.append(&label("Unsupported community account integration. This links your existing personal Muse agent, not a developer API key and not official Mac-device registration. No embedded website; no password, token or cookie form."));
+        content.append(&label("Links the existing personal Muse agent selected below. This is a native Linux client, not a website wrapper or developer API account. No password, token or cookie is entered here."));
         content.append(&label("Python executable (absolute path; install the community muse-mcp package in this interpreter's virtualenv):"));
         let python = gtk::Entry::new();
         python.set_text(&default_python().display().to_string());
@@ -632,6 +653,8 @@ mod native {
             login_cancellation: RefCell::new(None),
             rendering: Cell::new(false),
             root: root.clone(),
+            welcome: welcome.clone(),
+            pages: pages.clone(),
             settings: settings.clone(),
             python,
             config_dir,
@@ -657,6 +680,13 @@ mod native {
             send,
             spinner,
         });
+        {
+            let u = Rc::clone(&ui);
+            open_settings.connect_clicked(move |_| {
+                u.settings.set_expanded(true);
+                u.settings.grab_focus();
+            });
+        }
         {
             let u = Rc::clone(&ui);
             ui.existing.connect_clicked(move |_| {
@@ -1145,6 +1175,9 @@ mod native {
             let state = self.state.borrow();
             let connected = state.account.is_some();
             let idle = state.busy.is_none();
+            let (conversation_visible, setup_visible) = account_surface_visibility(connected);
+            self.pages.set_visible(conversation_visible);
+            self.welcome.set_visible(setup_visible);
             let settings_enabled = !connected && idle;
             for widget in [
                 self.python.upcast_ref::<gtk::Widget>(),
@@ -1182,6 +1215,7 @@ mod native {
                 .unwrap_or("");
             self.connection_notice
                 .set_text(&format!("{}{busy}", state.connection_notice));
+            self.identity.set_visible(connected);
             self.identity.set_text(
                 &state
                     .account
@@ -1190,9 +1224,9 @@ mod native {
                     .unwrap_or_else(|| "Not linked".into()),
             );
             self.chip.set_text(if connected {
-                "Muse account linked • no automatic file sharing"
+                "Connected"
             } else {
-                "Muse account disconnected • local files read-only"
+                "Not connected"
             });
             self.threads.remove_all();
             self.threads.append(Some("main"), "Main conversation");
@@ -1583,6 +1617,12 @@ print(json.dumps({'ok':True,'data':data}))
 mod tests {
     use super::*;
     type State = Controller<String, String, String>;
+
+    #[test]
+    fn disconnected_account_shows_setup_and_hides_empty_conversation_surface() {
+        assert_eq!(account_surface_visibility(false), (false, true));
+        assert_eq!(account_surface_visibility(true), (true, false));
+    }
 
     #[test]
     fn helper_error_codes_are_actionable_without_echoing_untrusted_output() {

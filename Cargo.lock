@@ -1860,6 +1860,7 @@ dependencies = [
  "libc",
  "muse-account",
  "muse-agent-runtime",
+ "muse-calendar",
  "muse-desktop",
  "muse-linux-core",
  "muse-local-link",

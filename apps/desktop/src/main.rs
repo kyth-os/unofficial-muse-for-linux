@@ -2,6 +2,7 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 mod account_login;
 mod account_ui;
+mod calendar_ui;
 mod desktop_ui;
 mod files_write_ui;
 mod local_host;
@@ -52,8 +53,17 @@ const DARK_THEME_CSS: &str = r#"
 window, .app-shell { background-color: #111318; color: #e9ebf0; }
 window.dark-window { background-color: #111318; }
 scrolledwindow viewport { background-color: transparent; }
-.navigation-rail { background-color: #151820; border-right: 1px solid #292d37; padding: 14px 10px; }
-.brand-mark { background-color: #2867c7; color: #ffffff; border-radius: 16px; font-weight: 700; min-width: 42px; min-height: 42px; }
+.navigation-rail { background-color: #151820; border-right: 1px solid #292d37; padding: 16px 12px; min-width: 184px; }
+.brand-row { padding: 0 6px 14px; }
+.brand-mark { background-color: #2867c7; color: #ffffff; border-radius: 12px; font-weight: 700; min-width: 34px; min-height: 34px; }
+.brand-label { color: #f3f5f8; font-size: 15px; font-weight: 700; }
+.nav-section-label { color: #7f8796; font-size: 11px; font-weight: 700; padding: 12px 10px 5px; }
+.nav-item { min-height: 38px; padding: 0 10px; border-radius: 10px; background: transparent; color: #b5bac6; border-color: transparent; }
+.nav-item:hover { background-color: #242833; color: #ffffff; }
+.nav-item.active { background-color: #26344a; color: #8fbdff; }
+.nav-item:focus { outline-width: 2px; outline-style: solid; outline-color: #3f7ad1; outline-offset: 1px; }
+.nav-icon { min-width: 20px; }
+.nav-label { padding-left: 10px; }
 .rail-button { min-width: 44px; min-height: 44px; padding: 0; border-radius: 22px; background: transparent; color: #b5bac6; border-color: transparent; transition: background-color 120ms ease-in-out; }
 .rail-button:hover { background-color: #242833; color: #ffffff; }
 .rail-button.active { background-color: #26344a; color: #8fbdff; }
@@ -74,6 +84,9 @@ scrolledwindow viewport { background-color: transparent; }
 .day-divider { color: #8b91a0; font-size: smaller; padding: 8px 0 2px; }
 .section-heading { font-weight: 700; color: #dfe3ea; }
 .settings-disclosure { background-color: #191c23; border: 1px solid #292d37; border-radius: 14px; padding: 10px 14px; }
+.welcome-card { background-color: #1b2637; border: 1px solid #31445f; border-radius: 16px; padding: 20px; }
+.welcome-title { color: #f3f5f8; font-size: 22px; font-weight: 700; }
+.welcome-card > label { color: #c7d1df; }
 .settings-content { padding: 10px 2px 4px; }
 .toolbar { }
 .chat-bubble { padding: 12px 16px; border-radius: 16px; font-size: 14px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
@@ -208,43 +221,85 @@ fn build_ui(app: &gtk::Application) {
     let shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     shell.add_css_class("app-shell");
 
-    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 4);
     sidebar.add_css_class("navigation-rail");
-    sidebar.set_size_request(68, -1);
+    sidebar.set_size_request(196, -1);
+
+    let brand_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    brand_row.add_css_class("brand-row");
     let brand = gtk::Label::new(Some("M"));
     brand.add_css_class("brand-mark");
-    sidebar.append(&brand);
-    let chats_nav = gtk::Button::from_icon_name("chat-symbolic");
-    chats_nav.set_tooltip_text(Some("Chats"));
-    chats_nav.add_css_class("rail-button");
+    let brand_label = gtk::Label::new(Some("Muse"));
+    brand_label.add_css_class("brand-label");
+    brand_label.set_halign(gtk::Align::Start);
+    brand_row.append(&brand);
+    brand_row.append(&brand_label);
+    sidebar.append(&brand_row);
+
+    let primary_heading = gtk::Label::new(Some("WORKSPACE"));
+    primary_heading.add_css_class("nav-section-label");
+    primary_heading.set_halign(gtk::Align::Start);
+    sidebar.append(&primary_heading);
+    let chats_nav = nav_button(
+        "chat-symbolic",
+        "Chat",
+        "Chat with your connected Muse account",
+    );
     chats_nav.add_css_class("active");
     sidebar.append(&chats_nav);
-    let files_nav = gtk::Button::from_icon_name("folder-symbolic");
-    files_nav.set_tooltip_text(Some("Files"));
-    files_nav.add_css_class("rail-button");
+    let files_nav = nav_button(
+        "folder-symbolic",
+        "Files",
+        "Browse the explicitly granted local folder",
+    );
     sidebar.append(&files_nav);
-    let host_nav = gtk::Button::from_icon_name("network-server-symbolic");
-    host_nav.set_tooltip_text(Some(
-        "Local host · consent, folder grants & create approvals",
-    ));
-    host_nav.add_css_class("rail-button");
-    sidebar.append(&host_nav);
-    let mail_nav = gtk::Button::from_icon_name("mail-symbolic");
-    mail_nav.set_tooltip_text(Some("Mail · generic IMAP reading & approval-gated sending"));
-    mail_nav.add_css_class("rail-button");
-    sidebar.append(&mail_nav);
-    let desktop_nav = gtk::Button::from_icon_name("video-display-symbolic");
-    desktop_nav.set_tooltip_text(Some("Desktop · portal screenshots & URL opening"));
-    desktop_nav.add_css_class("rail-button");
-    sidebar.append(&desktop_nav);
-    let tasks_nav = gtk::Button::from_icon_name("task-due-symbolic");
-    tasks_nav.set_tooltip_text(Some("Reminders · durable local tasks"));
-    tasks_nav.add_css_class("rail-button");
+    let tasks_nav = nav_button(
+        "task-due-symbolic",
+        "Reminders",
+        "Local reminders and tasks",
+    );
     sidebar.append(&tasks_nav);
-    let developer_nav = gtk::Button::from_icon_name("applications-engineering-symbolic");
-    developer_nav.set_tooltip_text(Some("Developer experiment — separate paid API key"));
-    developer_nav.add_css_class("rail-button");
+
+    let connections_heading = gtk::Label::new(Some("CONNECTIONS"));
+    connections_heading.add_css_class("nav-section-label");
+    connections_heading.set_halign(gtk::Align::Start);
+    sidebar.append(&connections_heading);
+    let host_nav = nav_button(
+        "network-server-symbolic",
+        "Local host",
+        "Consent, folder grants and local approvals",
+    );
+    sidebar.append(&host_nav);
+    let mail_nav = nav_button(
+        "mail-symbolic",
+        "Mail",
+        "Read mail and approve outgoing messages",
+    );
+    sidebar.append(&mail_nav);
+    let calendar_nav = nav_button(
+        "x-office-calendar-symbolic",
+        "Calendar",
+        "Read calendars and approve new events",
+    );
+    sidebar.append(&calendar_nav);
+    let desktop_nav = nav_button(
+        "video-display-symbolic",
+        "Desktop",
+        "Portal screenshots and URL opening",
+    );
+    sidebar.append(&desktop_nav);
+
+    let advanced_heading = gtk::Label::new(Some("ADVANCED"));
+    advanced_heading.add_css_class("nav-section-label");
+    advanced_heading.set_halign(gtk::Align::Start);
+    sidebar.append(&advanced_heading);
+    let developer_nav = nav_button(
+        "applications-engineering-symbolic",
+        "Developer API",
+        "Separate paid developer-model experiment",
+    );
     sidebar.append(&developer_nav);
+
     let nav_spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     nav_spacer.set_vexpand(true);
     sidebar.append(&nav_spacer);
@@ -255,10 +310,10 @@ fn build_ui(app: &gtk::Application) {
     main_column.set_vexpand(true);
     let topbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     topbar.add_css_class("topbar");
-    let page_title = gtk::Label::new(Some("Muse account · Chats & tasks"));
+    let page_title = gtk::Label::new(Some("Chat"));
     page_title.add_css_class("page-title");
     topbar.append(&page_title);
-    let service_status = gtk::Label::new(Some("Muse account disconnected • local files read-only"));
+    let service_status = gtk::Label::new(Some("Not connected"));
     service_status.add_css_class("status-chip");
     service_status.set_hexpand(true);
     service_status.set_halign(gtk::Align::End);
@@ -284,14 +339,18 @@ fn build_ui(app: &gtk::Application) {
     stack.add_named(&host_page.root, Some("host"));
     let mail_page: mail_ui::MailPage = mail_ui::build();
     stack.add_named(&mail_page.root, Some("mail"));
+    let calendar_page: calendar_ui::CalendarPage = calendar_ui::build();
+    stack.add_named(&calendar_page.root, Some("calendar"));
     let desktop_page: desktop_ui::DesktopPage = desktop_ui::build();
     stack.add_named(&desktop_page.root, Some("desktop"));
     let tasks_page: tasks_ui::TasksPage = tasks_ui::build();
     stack.add_named(&tasks_page.root, Some("tasks"));
     let cancel_login = Rc::clone(&account_page.cancel_login);
     let stop_host = host_page.shutdown.clone();
+    let stop_calendar = calendar_page.shutdown.clone();
     window.connect_close_request(move |_| {
         stop_host();
+        stop_calendar();
         cancel_login();
         gtk::glib::Propagation::Proceed
     });
@@ -828,6 +887,7 @@ fn build_ui(app: &gtk::Application) {
         (&files_nav, "files"),
         (&host_nav, "host"),
         (&mail_nav, "mail"),
+        (&calendar_nav, "calendar"),
         (&desktop_nav, "desktop"),
         (&tasks_nav, "tasks"),
         (&developer_nav, "developer"),
@@ -839,6 +899,7 @@ fn build_ui(app: &gtk::Application) {
         let files = files_nav.clone();
         let host = host_nav.clone();
         let mail = mail_nav.clone();
+        let calendar = calendar_nav.clone();
         let desktop = desktop_nav.clone();
         let tasks = tasks_nav.clone();
         let developer = developer_nav.clone();
@@ -851,6 +912,7 @@ fn build_ui(app: &gtk::Application) {
                     (&files, "files"),
                     (&host, "host"),
                     (&mail, "mail"),
+                    (&calendar, "calendar"),
                     (&desktop, "desktop"),
                     (&tasks, "tasks"),
                     (&developer, "developer"),
@@ -866,6 +928,7 @@ fn build_ui(app: &gtk::Application) {
     let files_for_open_files = files_nav.clone();
     let host_for_open_files = host_nav.clone();
     let mail_for_open_files = mail_nav.clone();
+    let calendar_for_open_files = calendar_nav.clone();
     let desktop_for_open_files = desktop_nav.clone();
     let tasks_for_open_files = tasks_nav.clone();
     let developer_for_open_files = developer_nav.clone();
@@ -878,6 +941,7 @@ fn build_ui(app: &gtk::Application) {
                 (&files_for_open_files, "files"),
                 (&host_for_open_files, "host"),
                 (&mail_for_open_files, "mail"),
+                (&calendar_for_open_files, "calendar"),
                 (&desktop_for_open_files, "desktop"),
                 (&tasks_for_open_files, "tasks"),
                 (&developer_for_open_files, "developer"),
@@ -892,6 +956,9 @@ fn build_ui(app: &gtk::Application) {
     let files_for_settings = files_nav.clone();
     let host_for_settings = host_nav.clone();
     let mail_for_settings = mail_nav.clone();
+    let calendar_for_settings = calendar_nav.clone();
+    let desktop_for_settings = desktop_nav.clone();
+    let tasks_for_settings = tasks_nav.clone();
     let developer_for_settings = developer_nav.clone();
     let setup_for_settings = account_page.settings.clone();
     settings_button.connect_clicked(move |_| {
@@ -903,6 +970,9 @@ fn build_ui(app: &gtk::Application) {
                 (&files_for_settings, "files"),
                 (&host_for_settings, "host"),
                 (&mail_for_settings, "mail"),
+                (&calendar_for_settings, "calendar"),
+                (&desktop_for_settings, "desktop"),
+                (&tasks_for_settings, "tasks"),
                 (&developer_for_settings, "developer"),
             ],
             "chats",
@@ -914,6 +984,32 @@ fn build_ui(app: &gtk::Application) {
     window.present();
 }
 
+fn nav_button(icon_name: &str, label: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.set_tooltip_text(Some(tooltip));
+    button.add_css_class("nav-item");
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.add_css_class("nav-icon");
+    icon.set_pixel_size(18);
+    let text = gtk::Label::new(Some(label));
+    text.add_css_class("nav-label");
+    text.set_halign(gtk::Align::Start);
+    text.set_hexpand(true);
+    row.append(&icon);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button
+}
+
+fn nav_css_classes(active: bool) -> &'static [&'static str] {
+    if active {
+        &["nav-item", "active"]
+    } else {
+        &["nav-item"]
+    }
+}
+
 fn select_page(
     stack: &gtk::Stack,
     title: &gtk::Label,
@@ -922,21 +1018,18 @@ fn select_page(
 ) {
     stack.set_visible_child_name(page);
     title.set_text(match page {
-        "chats" => "Muse account · Chats & tasks",
+        "chats" => "Chat",
         "files" => "Files",
-        "host" => "Local host · grants & approvals",
-        "mail" => "Mail · IMAP reading & approved sending",
-        "desktop" => "Desktop · portal screenshots & URL opening",
-        "tasks" => "Reminders · durable local tasks",
-        "developer" => "Developer experiment",
+        "host" => "Local host",
+        "mail" => "Mail",
+        "calendar" => "Calendar",
+        "desktop" => "Desktop",
+        "tasks" => "Reminders",
+        "developer" => "Developer API",
         _ => "Unknown page",
     });
     for (button, name) in navigation {
-        button.set_css_classes(if *name == page {
-            &["rail-button", "active"]
-        } else {
-            &["rail-button"]
-        });
+        button.set_css_classes(nav_css_classes(*name == page));
     }
 }
 
@@ -1192,6 +1285,12 @@ mod tests {
     }
 
     #[test]
+    fn navigation_selection_preserves_labeled_item_style() {
+        assert_eq!(super::nav_css_classes(true), &["nav-item", "active"]);
+        assert_eq!(super::nav_css_classes(false), &["nav-item"]);
+    }
+
+    #[test]
     fn chat_message_roles_place_user_on_right_and_assistant_on_left() {
         assert_eq!(
             super::bubble_alignment(super::ChatRole::User),
@@ -1214,7 +1313,13 @@ mod tests {
         for class in [
             "app-shell",
             "navigation-rail",
+            "brand-row",
             "brand-mark",
+            "brand-label",
+            "nav-section-label",
+            "nav-item",
+            "nav-icon",
+            "nav-label",
             "rail-button",
             "main-column",
             "topbar",
@@ -1232,6 +1337,8 @@ mod tests {
             "day-divider",
             "section-heading",
             "settings-disclosure",
+            "welcome-card",
+            "welcome-title",
             "settings-content",
             "toolbar",
             "chat-bubble",

@@ -19,6 +19,7 @@ muse-account = { path = "../../crates/muse-account" }
 muse-local-tools = { path = "../../crates/muse-local-tools" }
 muse-local-link = { path = "../../crates/muse-local-link" }
 muse-mail = { path = "../../crates/muse-mail" }
+muse-calendar = { path = "../../crates/muse-calendar" }
 muse-desktop = { path = "../../crates/muse-desktop" }
 muse-tasks = { path = "../../crates/muse-tasks" }
 gdk-pixbuf = "0.21"
