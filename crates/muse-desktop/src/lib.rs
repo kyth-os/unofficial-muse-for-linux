@@ -1287,19 +1287,26 @@ struct Conn {
     portal_sender: Option<String>,
 }
 
+fn external_uid_hex(uid: &str) -> String {
+    uid.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn uid_hex() -> String {
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
         for line in status.lines() {
             if let Some(rest) = line.strip_prefix("Uid:") {
-                if let Some(n) = rest.split_whitespace().next() {
-                    if let Ok(v) = n.parse::<u32>() {
-                        return format!("{v:x}");
+                if let Some(uid) = rest.split_whitespace().next() {
+                    if uid.bytes().all(|byte| byte.is_ascii_digit()) {
+                        return external_uid_hex(uid);
                     }
                 }
             }
         }
     }
-    "0".to_string()
+    external_uid_hex("0")
 }
 
 impl Conn {
@@ -2246,6 +2253,12 @@ mod tests {
         mixed.align(8);
         mixed.b.extend_from_slice(&mixed_entries.b);
         assert!(decode_remote_response(&mixed.b).is_err());
+    }
+
+    #[test]
+    fn external_uid_is_hex_encoded_ascii() {
+        assert_eq!(external_uid_hex("1000"), "31303030");
+        assert_eq!(external_uid_hex("0"), "30");
     }
 
     #[test]
