@@ -51,6 +51,40 @@ fn account_surface_visibility(connected: bool) -> (bool, bool) {
     (connected, !connected)
 }
 
+fn presentation_text(text: &str) -> String {
+    const WIDGET_MARKER: &str = "[[hatch_widget.";
+    const WIDGET_FALLBACK: &str =
+        "Muse returned an interactive widget that this Linux app cannot render yet.";
+    if !text.contains(WIDGET_MARKER) {
+        return text.to_owned();
+    }
+
+    let mut cleaned = String::with_capacity(text.len());
+    let mut remainder = text;
+    let mut removed_marker = false;
+    loop {
+        let Some(start) = remainder.find(WIDGET_MARKER) else {
+            cleaned.push_str(remainder);
+            break;
+        };
+        cleaned.push_str(&remainder[..start]);
+        let marker_tail = &remainder[start + WIDGET_MARKER.len()..];
+        let Some(end) = marker_tail.find("]]") else {
+            removed_marker = true;
+            break;
+        };
+        removed_marker = true;
+        remainder = &marker_tail[end + 2..];
+    }
+
+    let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() && removed_marker {
+        WIDGET_FALLBACK.to_owned()
+    } else {
+        normalized
+    }
+}
+
 pub(crate) fn login_error_message(code: &str) -> &'static str {
     match code {
         "invalid_request" => "Sign-in helper rejected the selected account directory.",
@@ -456,6 +490,7 @@ mod native {
         label.set_xalign(0.0);
         label.set_wrap(true);
         label.set_selectable(true);
+        label.set_max_width_chars(110);
         label
     }
 
@@ -1296,7 +1331,11 @@ mod native {
                 details.add_css_class("dim-label");
                 details.add_css_class("message-meta");
                 self.history.append(&details);
-                super::super::append_chat(&self.history, role, &message.text);
+                super::super::append_chat(
+                    &self.history,
+                    role,
+                    &super::presentation_text(&message.text),
+                );
             }
             super::super::clear_chat(&self.tasks);
             if let Some(tasks) = &state.tasks {
@@ -1629,6 +1668,18 @@ mod tests {
     fn disconnected_account_shows_setup_and_hides_empty_conversation_surface() {
         assert_eq!(account_surface_visibility(false), (false, true));
         assert_eq!(account_surface_visibility(true), (true, false));
+    }
+
+    #[test]
+    fn widget_markers_are_not_shown_as_raw_protocol_text() {
+        assert_eq!(
+            presentation_text("[[hatch_widget.widget-80acc675-df45-4ed0-8abc-66c93ac7a1fe]]"),
+            "Muse returned an interactive widget that this Linux app cannot render yet."
+        );
+        assert_eq!(
+            presentation_text("Hello [[hatch_widget.widget-abc]]"),
+            "Hello"
+        );
     }
 
     #[test]
