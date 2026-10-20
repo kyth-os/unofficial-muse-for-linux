@@ -1868,6 +1868,7 @@ dependencies = [
  "muse-mail",
  "muse-meta-api",
  "muse-tasks",
+ "serde",
  "serde_json",
 ]
 

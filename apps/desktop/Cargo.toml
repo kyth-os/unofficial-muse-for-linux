@@ -23,5 +23,6 @@ muse-calendar = { path = "../../crates/muse-calendar" }
 muse-desktop = { path = "../../crates/muse-desktop" }
 muse-tasks = { path = "../../crates/muse-tasks" }
 gdk-pixbuf = "0.21"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"

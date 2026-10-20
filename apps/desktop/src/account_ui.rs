@@ -411,13 +411,19 @@ mod native {
         AccountClient, AccountSnapshot, BridgeConfig, HistoryMessage, TasksSnapshot,
     };
     use std::cell::{Cell, RefCell};
+    #[cfg(unix)]
+    use std::ffi::CString;
+    use std::fs;
+    use std::io::{Read, Write};
+    #[cfg(unix)]
+    use std::os::fd::{FromRawFd, RawFd};
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, mpsc};
-    use std::time::Duration;
     #[cfg(test)]
     use std::time::Instant;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     type State = Controller<AccountSnapshot, HistoryMessage, TasksSnapshot>;
 
@@ -441,6 +447,7 @@ mod native {
         host_boundary: BoundaryHook,
         host_device: SharedDevice,
         login_cancellation: RefCell<Option<Arc<Cancellation>>>,
+        persistence_warning: RefCell<Option<String>>,
         rendering: Cell<bool>,
         root: gtk::Box,
         welcome: gtk::Box,
@@ -500,11 +507,341 @@ mod native {
             .unwrap_or_default()
     }
 
-    fn config_home() -> PathBuf {
-        std::env::var_os("XDG_CONFIG_HOME")
+    fn config_home() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
-            .unwrap_or_else(|| home().join(".config"))
+        {
+            return Some(path);
+        }
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|path| path.join(".config"))
+    }
+
+    fn persistent_config_home() -> Option<PathBuf> {
+        config_home()
+    }
+
+    fn valid_saved_path(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 4096
+            && !value.contains('\0')
+            && Path::new(value).is_absolute()
+    }
+
+    fn saved_connection_text(python: &str, config_dir: &str) -> String {
+        serde_json::json!({
+            "python": python,
+            "config_dir": config_dir,
+        })
+        .to_string()
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SavedConnection {
+        python: String,
+        config_dir: String,
+    }
+
+    fn saved_connection_from_text(text: &str) -> Option<(String, String)> {
+        let saved: SavedConnection = serde_json::from_str(text).ok()?;
+        if !valid_saved_path(&saved.python) || !valid_saved_path(&saved.config_dir) {
+            return None;
+        }
+        Some((saved.python, saved.config_dir))
+    }
+
+    #[cfg(unix)]
+    fn current_uid() -> u32 {
+        // SAFETY: geteuid has no preconditions and only reads the process credential.
+        unsafe { libc::geteuid() }
+    }
+
+    #[cfg(unix)]
+    fn close_fd(fd: RawFd) {
+        // SAFETY: fd was returned by a successful libc open call in this module.
+        unsafe {
+            libc::close(fd);
+        }
+    }
+
+    #[cfg(unix)]
+    fn check_directory_fd(fd: RawFd, require_current_owner: bool) -> Result<(), String> {
+        // SAFETY: zeroed is valid for libc::stat and fstat initializes every field.
+        let mut metadata = unsafe { std::mem::zeroed::<libc::stat>() };
+        // SAFETY: fd is borrowed for the duration of this fstat call and metadata is writable.
+        if unsafe { libc::fstat(fd, &mut metadata) } != 0 {
+            return Err("persistent config directory cannot be inspected".into());
+        }
+        if metadata.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err("persistent config path is not a directory".into());
+        }
+        if metadata.st_mode & 0o022 != 0
+            || (require_current_owner && metadata.st_uid != current_uid())
+        {
+            return Err("persistent config directory is not privately owned".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn open_directory_path(path: &Path, create_missing: bool) -> Result<RawFd, String> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("persistent config path is not safe".into());
+        }
+        let root = CString::new("/").expect("literal contains no NUL");
+        // SAFETY: root is a valid NUL-terminated path and the flags request a directory fd.
+        let mut current = unsafe {
+            libc::open(
+                root.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if current < 0 {
+            return Err("persistent config root unavailable".into());
+        }
+        for component in path.components() {
+            let std::path::Component::Normal(name) = component else {
+                continue;
+            };
+            let Some(name) = name.to_str() else {
+                close_fd(current);
+                return Err("persistent config path is not valid UTF-8".into());
+            };
+            let name = CString::new(name).expect("filesystem component contains no NUL");
+            // SAFETY: current is an open directory fd and name is NUL-terminated.
+            let mut next = unsafe {
+                libc::openat(
+                    current,
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if next < 0
+                && create_missing
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT)
+            {
+                // SAFETY: current is an open directory fd and name is NUL-terminated.
+                if unsafe { libc::mkdirat(current, name.as_ptr(), 0o700) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+                {
+                    close_fd(current);
+                    return Err("could not create persistent config directory".into());
+                }
+                // SAFETY: current is an open directory fd and name is NUL-terminated.
+                next = unsafe {
+                    libc::openat(
+                        current,
+                        name.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    )
+                };
+            }
+            if next < 0 {
+                close_fd(current);
+                return Err("persistent config directory unavailable".into());
+            }
+            if let Err(error) = check_directory_fd(next, false) {
+                close_fd(next);
+                close_fd(current);
+                return Err(error);
+            }
+            close_fd(current);
+            current = next;
+        }
+        if let Err(error) = check_directory_fd(current, true) {
+            close_fd(current);
+            return Err(error);
+        }
+        Ok(current)
+    }
+
+    #[cfg(unix)]
+    fn open_child_directory(
+        parent: RawFd,
+        name: &str,
+        create_missing: bool,
+    ) -> Result<RawFd, String> {
+        let name = CString::new(name).map_err(|_| "persistent config path is not safe")?;
+        // SAFETY: parent is an open directory fd and name is NUL-terminated.
+        let mut child = unsafe {
+            libc::openat(
+                parent,
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if child < 0
+            && create_missing
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT)
+        {
+            // SAFETY: parent is an open directory fd and name is NUL-terminated.
+            if unsafe { libc::mkdirat(parent, name.as_ptr(), 0o700) } != 0
+                && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+            {
+                return Err("could not create persistent config directory".into());
+            }
+            // SAFETY: parent is an open directory fd and name is NUL-terminated.
+            child = unsafe {
+                libc::openat(
+                    parent,
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+        }
+        if child < 0 {
+            return Err("persistent config directory unavailable".into());
+        }
+        if let Err(error) = check_directory_fd(child, true) {
+            close_fd(child);
+            return Err(error);
+        }
+        Ok(child)
+    }
+
+    fn display_connection_notice(base: &str, busy: &str, warning: Option<&str>) -> String {
+        format!("{base}{busy}{}", warning.unwrap_or(""))
+    }
+
+    #[cfg(unix)]
+    fn load_saved_connection() -> Option<(String, String)> {
+        let root = open_directory_path(&persistent_config_home()?, false).ok()?;
+        let app = match open_child_directory(root, "unofficial-muse-for-linux", false) {
+            Ok(fd) => fd,
+            Err(_) => {
+                close_fd(root);
+                return None;
+            }
+        };
+        let name = CString::new("account-connection.json").expect("literal contains no NUL");
+        // SAFETY: app is an open directory fd and name is NUL-terminated.
+        let file_fd = unsafe {
+            libc::openat(
+                app,
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if file_fd < 0 {
+            close_fd(app);
+            close_fd(root);
+            return None;
+        }
+        // SAFETY: zeroed is valid for libc::stat and fstat initializes every field.
+        let mut metadata = unsafe { std::mem::zeroed::<libc::stat>() };
+        // SAFETY: file_fd is open and metadata is writable.
+        let valid = unsafe { libc::fstat(file_fd, &mut metadata) } == 0
+            && metadata.st_mode & libc::S_IFMT == libc::S_IFREG
+            && metadata.st_uid == current_uid()
+            && metadata.st_mode & 0o077 == 0
+            && metadata.st_size >= 0
+            && metadata.st_size <= 16 * 1024;
+        if !valid {
+            close_fd(file_fd);
+            close_fd(app);
+            close_fd(root);
+            return None;
+        }
+        // SAFETY: file_fd is owned here and transferred to File exactly once.
+        let mut file = unsafe { fs::File::from_raw_fd(file_fd) };
+        let mut bytes = Vec::with_capacity(metadata.st_size as usize);
+        if (&mut file)
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > 16 * 1024
+        {
+            close_fd(app);
+            close_fd(root);
+            return None;
+        }
+        drop(file);
+        close_fd(app);
+        close_fd(root);
+        let text = String::from_utf8(bytes).ok()?;
+        saved_connection_from_text(&text)
+    }
+
+    #[cfg(not(unix))]
+    fn load_saved_connection() -> Option<(String, String)> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn save_connection(python: &str, config_dir: &str) -> Result<(), String> {
+        let root = open_directory_path(
+            &persistent_config_home().ok_or("persistent config directory unavailable")?,
+            true,
+        )?;
+        let app = match open_child_directory(root, "unofficial-muse-for-linux", true) {
+            Ok(fd) => fd,
+            Err(error) => {
+                close_fd(root);
+                return Err(error);
+            }
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary_name = format!(".account-connection.{nonce}.tmp");
+        let temporary =
+            CString::new(temporary_name.as_str()).expect("generated name contains no NUL");
+        let target = CString::new("account-connection.json").expect("literal contains no NUL");
+        // SAFETY: app is an open directory fd and both names are NUL-terminated.
+        let file_fd = unsafe {
+            libc::openat(
+                app,
+                temporary.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                0o600,
+            )
+        };
+        if file_fd < 0 {
+            close_fd(app);
+            close_fd(root);
+            return Err("could not create persistent config file".into());
+        }
+        // SAFETY: file_fd is owned here and transferred to File exactly once.
+        let mut file = unsafe { fs::File::from_raw_fd(file_fd) };
+        let result = (|| {
+            file.write_all(saved_connection_text(python, config_dir).as_bytes())
+                .map_err(|_| "could not write persistent config file")?;
+            file.sync_all()
+                .map_err(|_| "could not sync persistent config file")?;
+            drop(file);
+            // SAFETY: app is an open directory fd and both names are NUL-terminated.
+            if unsafe { libc::renameat(app, temporary.as_ptr(), app, target.as_ptr()) } != 0 {
+                return Err("could not install persistent config file".into());
+            }
+            // The file is already installed if directory fsync is unavailable. Do not report
+            // a save failure after rename, because the preference may now be visible.
+            // SAFETY: app is an open directory fd.
+            let _ = unsafe { libc::fsync(app) };
+            Ok(())
+        })();
+        if result.is_err() {
+            // SAFETY: app is an open directory fd and temporary is NUL-terminated.
+            unsafe {
+                libc::unlinkat(app, temporary.as_ptr(), 0);
+            }
+        }
+        close_fd(app);
+        close_fd(root);
+        result
+    }
+
+    #[cfg(not(unix))]
+    fn save_connection(_python: &str, _config_dir: &str) -> Result<(), String> {
+        Err("persistent connection preferences are unavailable on this platform".into())
     }
 
     fn default_python() -> PathBuf {
@@ -573,17 +910,25 @@ mod native {
         let python = gtk::Entry::new();
         python.set_text(&default_python().display().to_string());
         content.append(&python);
-        content.append(&label(
-            "Muse session directory (paths stay in memory; disconnect before changing):",
-        ));
+        content.append(&label("Muse session directory:"));
         let config_dir = gtk::Entry::new();
         config_dir.set_text(
             &config_home()
-                .join("unofficial-muse-for-linux/account")
-                .display()
-                .to_string(),
+                .map(|path| {
+                    path.join("unofficial-muse-for-linux/account")
+                        .display()
+                        .to_string()
+                })
+                .unwrap_or_default(),
         );
+        if let Some((saved_python, saved_config_dir)) = load_saved_connection() {
+            python.set_text(&saved_python);
+            config_dir.set_text(&saved_config_dir);
+        }
         content.append(&config_dir);
+        content.append(&label(
+            "These two paths are remembered locally for the next launch. Session credentials stay in the selected directory and are never copied into this preference.",
+        ));
         let consent = gtk::CheckButton::with_label(
             "I allow access to this selected Muse session, its account identity, conversations and task history.",
         );
@@ -688,6 +1033,7 @@ mod native {
             host_boundary: Rc::new(RefCell::new(None)),
             host_device: Rc::new(RefCell::new(None)),
             login_cancellation: RefCell::new(None),
+            persistence_warning: RefCell::new(None),
             rendering: Cell::new(false),
             root: root.clone(),
             welcome: welcome.clone(),
@@ -727,9 +1073,19 @@ mod native {
         {
             let u = Rc::clone(&ui);
             ui.existing.connect_clicked(move |_| {
-                u.config_dir.set_text(&config_home().join("muse-cli").display().to_string());
+                let selected = if let Some(config_home) = config_home() {
+                    u.config_dir
+                        .set_text(&config_home.join("muse-cli").display().to_string());
+                    true
+                } else {
+                    false
+                };
                 u.consent.set_active(false);
-                u.state.borrow_mut().connection_notice = "Existing local Muse session selected. Review this path, consent, then click Connect. No account file has been read by this action.".into();
+                u.state.borrow_mut().connection_notice = if selected {
+                    "Existing local Muse session selected. Review this path, consent, then click Connect. No account file has been read by this action.".into()
+                } else {
+                    "Set HOME or XDG_CONFIG_HOME before selecting a local Muse session.".into()
+                };
                 u.render();
             });
         }
@@ -906,6 +1262,10 @@ mod native {
                     return;
                 }
             };
+            let persistence_notice = save_connection(&self.python.text(), &self.config_dir.text())
+                .err()
+                .map(|error| format!(" · Connection paths were not saved locally: {error}."));
+            *self.persistence_warning.borrow_mut() = persistence_notice;
             *self.connected_config.borrow_mut() = Some(config.clone());
             let active = Arc::new(AtomicBool::new(true));
             *self.account_active.borrow_mut() = Some(active.clone());
@@ -935,6 +1295,10 @@ mod native {
                     return;
                 }
             };
+            let persistence_notice = save_connection(&self.python.text(), &self.config_dir.text())
+                .err()
+                .map(|error| format!(" · Connection paths were not saved locally: {error}."));
+            *self.persistence_warning.borrow_mut() = persistence_notice;
             let script = script_path("muse_account_login.py");
             let cancellation = Arc::new(Cancellation::default());
             *self.login_cancellation.borrow_mut() = Some(Arc::clone(&cancellation));
@@ -1250,8 +1614,13 @@ mod native {
                     Operation::Login => " · browser sign-in in progress…",
                 })
                 .unwrap_or("");
-            self.connection_notice
-                .set_text(&format!("{}{busy}", state.connection_notice));
+            let persistence_warning_guard = self.persistence_warning.borrow();
+            let persistence_warning = persistence_warning_guard.as_deref();
+            self.connection_notice.set_text(&display_connection_notice(
+                &state.connection_notice,
+                busy,
+                persistence_warning,
+            ));
             self.identity.set_visible(connected);
             self.identity.set_text(
                 &state
@@ -1585,6 +1954,86 @@ print(json.dumps({'ok':True,'data':data}))
         }
 
         #[test]
+        fn saved_connection_profile_round_trips_only_non_secret_paths() {
+            let encoded = saved_connection_text("/usr/bin/python3", "/home/test/.config/muse");
+            assert!(!encoded.contains("password"));
+            assert_eq!(
+                saved_connection_from_text(&encoded),
+                Some(("/usr/bin/python3".into(), "/home/test/.config/muse".into()))
+            );
+        }
+
+        #[test]
+        fn saved_connection_profile_rejects_relative_or_malformed_values() {
+            assert!(saved_connection_from_text("not-json").is_none());
+            assert!(
+                saved_connection_from_text(r#"{"python":"python3","config_dir":"/tmp/muse"}"#)
+                    .is_none()
+            );
+            assert!(
+                saved_connection_from_text(
+                    r#"{"python":"/usr/bin/python3","config_dir":"/tmp/muse","token":"secret"}"#
+                )
+                .is_none()
+            );
+            assert!(
+                saved_connection_from_text(
+                    r#"{"python":"/usr/bin/python3","python":"/usr/bin/python3","config_dir":"/tmp/muse"}"#
+                )
+                .is_none()
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn persistent_directories_are_private_and_nofollow() {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+
+            let scratch = std::env::var_os("TMPDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(format!(
+                    "muse-persistence-test-{}-{}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+            fs::create_dir(&scratch).unwrap();
+            let root_path = scratch.join("missing").join("config");
+            let root = open_directory_path(&root_path, true).unwrap();
+            close_fd(root);
+            let mode = fs::metadata(&root_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o022, 0);
+
+            let app_path = root_path.join("unofficial-muse-for-linux");
+            let root = open_directory_path(&root_path, false).unwrap();
+            let app = open_child_directory(root, "unofficial-muse-for-linux", true).unwrap();
+            close_fd(app);
+            close_fd(root);
+            fs::set_permissions(&app_path, fs::Permissions::from_mode(0o770)).unwrap();
+            let root = open_directory_path(&root_path, false).unwrap();
+            assert!(open_child_directory(root, "unofficial-muse-for-linux", false).is_err());
+            close_fd(root);
+
+            let link = scratch.join("config-link");
+            symlink(&root_path, &link).unwrap();
+            assert!(open_directory_path(&link, false).is_err());
+            fs::remove_dir_all(scratch).unwrap();
+        }
+
+        #[test]
+        fn persistence_failure_notice_survives_busy_state_rendering() {
+            let rendered = display_connection_notice(
+                "Account linked.",
+                "",
+                Some(" · Connection paths were not saved locally: unavailable."),
+            );
+            assert!(rendered.contains("Connection paths were not saved locally"));
+        }
+
+        #[test]
         fn schedule_times_are_readable_utc_without_inventing_missing_values() {
             assert_eq!(utc_time(Some(0)), "1970-01-01 00:00:00 UTC");
             assert_eq!(utc_time(None), "not supplied");
@@ -1625,7 +2074,7 @@ print(json.dumps({'ok':True,'data':data}))
             button(&page.root, "Use existing local Muse session").emit_clicked();
             assert_eq!(
                 entries[1].text().as_str(),
-                config_home().join("muse-cli").to_str().unwrap()
+                config_home().unwrap().join("muse-cli").to_str().unwrap()
             );
             assert!(!consent.is_active());
             entries[0].set_text("/usr/bin/python3");
