@@ -1,6 +1,8 @@
 //! Public-surface tests needing no bus: validation runs before any I/O,
 //! so these prove rejection without dialing (unroutable endpoint).
-use muse_desktop::{BusEndpoint, DesktopError, DesktopPortal};
+use muse_desktop::{
+    BusEndpoint, DesktopError, DesktopPortal, REMOTE_DEVICE_KEYBOARD, REMOTE_DEVICE_POINTER,
+};
 
 fn dead_bus() -> BusEndpoint {
     BusEndpoint::unix_socket("/nonexistent-bus-path-xyz")
@@ -41,4 +43,28 @@ fn unreachable_bus_is_transport_not_panic() {
         DesktopPortal::open_url_via(&dead_bus(), "https://example.com/").unwrap_err(),
         DesktopError::Transport(_)
     ));
+}
+
+#[test]
+fn remote_invalid_arguments_rejected_before_dial() {
+    let bus = dead_bus();
+    let cases = [
+        ("", "session", "parent", REMOTE_DEVICE_KEYBOARD),
+        ("handle", "bad-token", "parent", REMOTE_DEVICE_KEYBOARD),
+        ("handle", "session", "parent\n", REMOTE_DEVICE_KEYBOARD),
+        ("handle", "session", "parent", 0),
+        ("handle", "session", "parent", REMOTE_DEVICE_KEYBOARD | 4),
+    ];
+    for (handle, session, parent, devices) in cases {
+        assert!(matches!(
+            DesktopPortal::start_remote_desktop_via(&bus, handle, session, parent, devices),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+    }
+}
+
+#[test]
+fn remote_public_device_bits_are_stable() {
+    assert_eq!(REMOTE_DEVICE_KEYBOARD, 1);
+    assert_eq!(REMOTE_DEVICE_POINTER, 2);
 }

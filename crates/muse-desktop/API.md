@@ -1,15 +1,35 @@
-# muse-desktop — portal screen-context + OpenURI
+# muse-desktop — portal screen-context, OpenURI, and consented input
 
-Two operations against the XDG Desktop Portal (`org.freedesktop.portal.Desktop`),
-both consent-gated by the portal itself. No background capture, no persistence,
-no approve/deny store in this crate — the approval UI is the parent's job.
+Three operations against the XDG Desktop Portal, all consent-gated by the
+portal itself. No background capture, no persistence, no approve/deny store in
+this crate — the approval UI is the parent's job.
 
 ## API (frozen)
 
 ```rust
 DesktopPortal::screenshot_via(bus: &BusEndpoint, token: &str) -> Result<Screenshot, DesktopError>
 DesktopPortal::open_url_via(bus: &BusEndpoint, url: &str) -> Result<(), DesktopError>
+DesktopPortal::start_remote_desktop_via(
+    bus: &BusEndpoint,
+    handle_token: &str,
+    session_token: &str,
+    parent_window: &str,
+    requested_devices: u32,
+) -> Result<RemoteDesktopSession, DesktopError>
+DesktopPortal::start_remote_desktop_via_with_cancel(
+    bus: &BusEndpoint,
+    handle_token: &str,
+    session_token: &str,
+    parent_window: &str,
+    requested_devices: u32,
+    cancel: &dyn Fn() -> bool,
+) -> Result<RemoteDesktopSession, DesktopError>
 ```
+
+RemoteDesktop device bits are `REMOTE_DEVICE_KEYBOARD = 1` and
+`REMOTE_DEVICE_POINTER = 2`. A returned `RemoteDesktopSession` exposes only
+typed pointer/keyboard notification methods and `stop()`; its D-Bus fields are
+opaque.
 
 - `BusEndpoint::unix_socket(path)` — real session bus (e.g. `$XDG_RUNTIME_DIR/bus`).
 - `BusEndpoint::loopback_tcp(port)` — test fakes only; dials `127.0.0.1`, never a remote host.
@@ -32,6 +52,23 @@ filtered by request path, 20 s deadline:
   capped at `MAX_SCREENSHOT_BYTES` (8 MiB, fail closed → `TooLarge`).
 - `OpenURI("", url, {})` → on code 0 returns `Ok(())`; results are never read
   (no response scraping).
+- RemoteDesktop is a stateful, consent-gated lifecycle on one connection:
+  `CreateSession({handle_token, session_handle_token})` → wait for
+  `Request.Response`, `SelectDevices(session_handle, {handle_token, types})`
+  → wait for its response, then `Start(session_handle, parent_window,
+  {handle_token})`
+  → wait for its response. The CreateSession result must contain
+  `session_handle` as the portal's string-encoded object-path value; Start
+  must contain `devices` as `u`, with only requested, supported bits. Input is
+  unavailable until all three requests succeed.
+- Input uses only the documented RemoteDesktop methods with typed options
+  vardicts: `NotifyPointerMotion(o,a{sv},d,d)`,
+  `NotifyPointerButton(o,a{sv},i,u)`, `NotifyPointerAxis(o,a{sv},d,d)`
+  with the boolean `finish` option,
+  `NotifyPointerAxisDiscrete(o,a{sv},u,i)`,
+  `NotifyKeyboardKeysym(o,a{sv},i,u)`, and
+  `NotifyKeyboardKeycode(o,a{sv},i,u)`. `stop()` calls
+  `org.freedesktop.portal.Session.Close()` and closes the connection.
 
 ## Error mapping
 
@@ -48,8 +85,20 @@ Matching is on the last dotted segment with equality, never substrings: a
 custom `org.example.NotCancelledEver` is `Transport`, not `Cancelled`.
 
 Denial/cancel is always a typed error — there is no fallback capture path.
-X11 SHM, compositor bypass, and global input are explicitly out of scope and
-are not implemented.
+The RemoteDesktop safety boundary is portal consent plus the granted-device
+mask: no input is sent before successful Start, device families not granted
+by Start are rejected, invalid values are rejected before dialing, and input
+after stop is rejected. X11 SHM, compositor bypass, and global input are
+explicitly out of scope and are not implemented.
+
+## Explicit limitations
+
+- This slice does not implement touchscreen, clipboard, EIS, PipeWire,
+  ScreenCast frame decoding, persistence, restore tokens, or shell access.
+- `pointer_axis` sends the documented `finish` boolean option in its
+  `a{sv}` vardict; no extra options or generic D-Bus body escape hatch are
+  exposed.
+- The crate does not retain approval decisions or reconnect/restore sessions.
 
 ## Redaction
 

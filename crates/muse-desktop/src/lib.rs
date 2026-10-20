@@ -1,20 +1,9 @@
 //! Portal-based screen context + harmless desktop actions for Muse on Linux.
 //!
-//! Two operations against the XDG Desktop Portal, both consent-gated by the
-//! portal itself (the screenshot dialog and the URL-open approval are owned
-//! by the portal/compositor, not by this crate):
-//!
-//! * [`DesktopPortal::screenshot_via`] — one-shot screenshot via
-//!   `org.freedesktop.portal.Screenshot`. Read-only, no background capture,
-//!   no persistence; the caller receives bounded bytes.
-//! * [`DesktopPortal::open_url_via`] — single `OpenURI` call for caller
-//!   supplied `http(s)` URLs only. No response scraping.
-//!
-//! Both take an injected [`BusEndpoint`] so tests run against loopback fakes
-//! and never touch a live session bus. There is no approve/deny store here;
-//! the approval UI is the parent's job. Denial or cancel is always a typed
-//! [`DesktopError`], never a fallback to silent capture (X11 SHM, compositor
-//! bypass, global input are out of scope and are not implemented).
+//! Three operations against the XDG Desktop Portal, all consent-gated by the
+//! portal itself: one-shot screenshot, one-shot OpenURI, and a stateful
+//! RemoteDesktop input session. The portal/compositor owns approval; this crate
+//! does not store approvals or bypass the portal.
 //!
 //! URLs are caller-supplied and echoed only in the portal approval binding,
 //! never logged and never embedded in errors.
@@ -29,6 +18,11 @@ use std::time::{Duration, Instant};
 /// Fail-closed cap on screenshot bytes accepted per call (8 MiB).
 pub const MAX_SCREENSHOT_BYTES: usize = 8 * 1024 * 1024;
 
+/// RemoteDesktop device bit for keyboard input.
+pub const REMOTE_DEVICE_KEYBOARD: u32 = 1;
+/// RemoteDesktop device bit for pointer input.
+pub const REMOTE_DEVICE_POINTER: u32 = 2;
+
 const MAX_URL_LEN: usize = 2048;
 const MAX_TOKEN_LEN: usize = 255;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,6 +36,16 @@ const IFACE_REQUEST: &str = "org.freedesktop.portal.Request";
 const DBUS_DEST: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const DBUS_IFACE: &str = "org.freedesktop.DBus";
+const IFACE_REMOTE_DESKTOP: &str = "org.freedesktop.portal.RemoteDesktop";
+const IFACE_SESSION: &str = "org.freedesktop.portal.Session";
+const MAX_PARENT_WINDOW_LEN: usize = 255;
+const MAX_REMOTE_DELTA: f64 = 20_000.0;
+const MAX_REMOTE_STEPS: i32 = 100;
+const REMOTE_KEYCODE_MAX: i32 = 0x2ff;
+const REMOTE_BUTTON_MIN: i32 = 0x100;
+const REMOTE_BUTTON_MAX: i32 = 0x2ff;
+const REMOTE_KEYSYM_MAX: i32 = 0x1fff_ffff;
+const REMOTE_DEVICE_MASK: u32 = REMOTE_DEVICE_KEYBOARD | REMOTE_DEVICE_POINTER;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -106,7 +110,7 @@ impl fmt::Display for DesktopError {
 
 impl std::error::Error for DesktopError {}
 
-/// Namespace for the two portal operations. No state, no approval store.
+/// Namespace for the portal operations. No state, no approval store.
 pub struct DesktopPortal;
 
 impl DesktopPortal {
@@ -165,6 +169,303 @@ impl DesktopPortal {
             _ => Err(DesktopError::PermissionDenied),
         }
     }
+
+    /// Start a consent-gated, stateful RemoteDesktop input session.
+    pub fn start_remote_desktop_via(
+        bus: &BusEndpoint,
+        handle_token: &str,
+        session_token: &str,
+        parent_window: &str,
+        requested_devices: u32,
+    ) -> Result<RemoteDesktopSession, DesktopError> {
+        Self::start_remote_desktop_via_with_cancel(
+            bus,
+            handle_token,
+            session_token,
+            parent_window,
+            requested_devices,
+            &|| false,
+        )
+    }
+
+    /// Cancellable variant used by the GTK worker so Stop can interrupt a
+    /// consent wait and close any request/session handle already created.
+    pub fn start_remote_desktop_via_with_cancel(
+        bus: &BusEndpoint,
+        handle_token: &str,
+        session_token: &str,
+        parent_window: &str,
+        requested_devices: u32,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<RemoteDesktopSession, DesktopError> {
+        validate_token(handle_token)?;
+        validate_token(session_token)?;
+        validate_parent_window(parent_window)?;
+        validate_requested_devices(requested_devices)?;
+
+        let mut conn = Conn::connect(bus)?;
+        conn.hello_with_cancel(cancel)?;
+        conn.add_match_with_cancel(cancel)?;
+
+        let create_request = conn.portal_request_with_cancel(
+            IFACE_REMOTE_DESKTOP,
+            "CreateSession",
+            "a{sv}",
+            &remote_create_body(handle_token, session_token),
+            cancel,
+        )?;
+        let create = match conn.wait_remote_response_with_cancel(&create_request, cancel) {
+            Ok(response) => response,
+            Err(error) => {
+                conn.close_request(&create_request);
+                return Err(error);
+            }
+        };
+        if create.code != 0 {
+            conn.close_request(&create_request);
+            return Err(response_code_error(create.code));
+        }
+        let session_handle = match create.session_handle {
+            Some(handle) => handle,
+            None => {
+                conn.close_request(&create_request);
+                return Err(DesktopError::Transport(
+                    "remote session response missing session_handle".into(),
+                ));
+            }
+        };
+        if let Err(error) = validate_object_path(&session_handle) {
+            conn.close_request(&create_request);
+            return Err(error);
+        }
+        if cancel() {
+            conn.close_session(&session_handle);
+            return Err(DesktopError::Cancelled);
+        }
+
+        let select_request = match conn.portal_request_with_cancel(
+            IFACE_REMOTE_DESKTOP,
+            "SelectDevices",
+            "oa{sv}",
+            &remote_select_body(&session_handle, handle_token, requested_devices),
+            cancel,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                conn.close_session(&session_handle);
+                return Err(error);
+            }
+        };
+        let select = match conn.wait_remote_response_with_cancel(&select_request, cancel) {
+            Ok(response) => response,
+            Err(error) => {
+                conn.close_request(&select_request);
+                conn.close_session(&session_handle);
+                return Err(error);
+            }
+        };
+        if select.code != 0 {
+            conn.close_request(&select_request);
+            conn.close_session(&session_handle);
+            return Err(response_code_error(select.code));
+        }
+
+        let start_request = match conn.portal_request_with_cancel(
+            IFACE_REMOTE_DESKTOP,
+            "Start",
+            "osa{sv}",
+            &remote_start_body(&session_handle, handle_token, parent_window),
+            cancel,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                conn.close_session(&session_handle);
+                return Err(error);
+            }
+        };
+        let start = match conn.wait_remote_response_with_cancel(&start_request, cancel) {
+            Ok(response) => response,
+            Err(error) => {
+                conn.close_request(&start_request);
+                conn.close_session(&session_handle);
+                return Err(error);
+            }
+        };
+        if start.code != 0 {
+            conn.close_request(&start_request);
+            conn.close_session(&session_handle);
+            return Err(response_code_error(start.code));
+        }
+        let granted_devices = match start.devices {
+            Some(devices) => devices,
+            None => {
+                conn.close_request(&start_request);
+                conn.close_session(&session_handle);
+                return Err(DesktopError::Transport(
+                    "remote start response missing devices".into(),
+                ));
+            }
+        };
+        validate_granted_devices(requested_devices, granted_devices)
+            .inspect_err(|_| conn.close_session(&session_handle))?;
+
+        Ok(RemoteDesktopSession {
+            conn: Some(conn),
+            session_handle,
+            granted_devices,
+            stopped: false,
+        })
+    }
+}
+
+/// A consented XDG RemoteDesktop input session.
+pub struct RemoteDesktopSession {
+    conn: Option<Conn>,
+    session_handle: String,
+    granted_devices: u32,
+    stopped: bool,
+}
+
+impl RemoteDesktopSession {
+    pub fn granted_devices(&self) -> u32 {
+        self.granted_devices
+    }
+
+    pub fn pointer_motion(&mut self, dx: f64, dy: f64) -> Result<(), DesktopError> {
+        validate_finite(dx, "dx")?;
+        validate_finite(dy, "dy")?;
+        self.require_input(REMOTE_DEVICE_POINTER)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_strs(&[]);
+        w.f64(dx);
+        w.f64(dy);
+        self.notify("NotifyPointerMotion", "oa{sv}dd", &w.b)
+    }
+
+    pub fn pointer_button(&mut self, button: i32, state: u32) -> Result<(), DesktopError> {
+        validate_button(button)?;
+        validate_key_state(state)?;
+        self.require_input(REMOTE_DEVICE_POINTER)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_strs(&[]);
+        w.i32(button);
+        w.u32(state);
+        self.notify("NotifyPointerButton", "oa{sv}iu", &w.b)
+    }
+
+    pub fn pointer_axis(&mut self, dx: f64, dy: f64, finish: bool) -> Result<(), DesktopError> {
+        validate_finite(dx, "dx")?;
+        validate_finite(dy, "dy")?;
+        self.require_input(REMOTE_DEVICE_POINTER)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_bool("finish", finish);
+        w.f64(dx);
+        w.f64(dy);
+        self.notify("NotifyPointerAxis", "oa{sv}dd", &w.b)
+    }
+
+    pub fn pointer_axis_discrete(&mut self, axis: u32, steps: i32) -> Result<(), DesktopError> {
+        validate_axis(axis)?;
+        if steps == 0 || steps.unsigned_abs() > MAX_REMOTE_STEPS as u32 {
+            return Err(DesktopError::InvalidArgument(
+                "steps must be nonzero".into(),
+            ));
+        }
+        self.require_input(REMOTE_DEVICE_POINTER)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_strs(&[]);
+        w.u32(axis);
+        w.i32(steps);
+        self.notify("NotifyPointerAxisDiscrete", "oa{sv}ui", &w.b)
+    }
+
+    pub fn keyboard_keysym(&mut self, keysym: i32, state: u32) -> Result<(), DesktopError> {
+        validate_keysym(keysym)?;
+        validate_key_state(state)?;
+        self.require_input(REMOTE_DEVICE_KEYBOARD)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_strs(&[]);
+        w.i32(keysym);
+        w.u32(state);
+        self.notify("NotifyKeyboardKeysym", "oa{sv}iu", &w.b)
+    }
+
+    pub fn keyboard_keycode(&mut self, keycode: i32, state: u32) -> Result<(), DesktopError> {
+        validate_keycode(keycode)?;
+        validate_key_state(state)?;
+        self.require_input(REMOTE_DEVICE_KEYBOARD)?;
+        let mut w = W::new();
+        w.object(&self.session_handle);
+        w.dict_strs(&[]);
+        w.i32(keycode);
+        w.u32(state);
+        self.notify("NotifyKeyboardKeycode", "oa{sv}iu", &w.b)
+    }
+
+    pub fn stop(&mut self) -> Result<(), DesktopError> {
+        if self.stopped {
+            return Ok(());
+        }
+        self.stopped = true;
+        let Some(mut conn) = self.conn.take() else {
+            return Ok(());
+        };
+        let result = conn
+            .transact(
+                PORTAL_DEST,
+                &self.session_handle,
+                IFACE_SESSION,
+                "Close",
+                "",
+                &[],
+            )
+            .and_then(|reply| {
+                if reply.ty == 3 {
+                    Err(map_dbus_error(reply.err.as_deref().unwrap_or("")))
+                } else {
+                    Ok(())
+                }
+            });
+        drop(conn);
+        result
+    }
+
+    fn require_input(&self, device: u32) -> Result<(), DesktopError> {
+        if self.stopped || self.conn.is_none() {
+            return Err(DesktopError::InvalidArgument(
+                "remote session is stopped".into(),
+            ));
+        }
+        if self.granted_devices & device == 0 {
+            return Err(DesktopError::PermissionDenied);
+        }
+        Ok(())
+    }
+
+    fn notify(&mut self, member: &str, sig: &str, body: &[u8]) -> Result<(), DesktopError> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| DesktopError::InvalidArgument("remote session is stopped".into()))?;
+        let reply = conn.transact(
+            PORTAL_DEST,
+            &self.session_handle,
+            IFACE_REMOTE_DESKTOP,
+            member,
+            sig,
+            body,
+        )?;
+        if reply.ty == 3 {
+            Err(map_dbus_error(reply.err.as_deref().unwrap_or("")))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +517,145 @@ fn validate_token(token: &str) -> Result<(), DesktopError> {
         ));
     }
     Ok(())
+}
+
+fn validate_parent_window(parent_window: &str) -> Result<(), DesktopError> {
+    if parent_window.len() > MAX_PARENT_WINDOW_LEN
+        || parent_window
+            .bytes()
+            .any(|b| b == 0 || b < 0x20 || b == 0x7f)
+    {
+        return Err(DesktopError::InvalidArgument(
+            "parent window is malformed".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_requested_devices(devices: u32) -> Result<(), DesktopError> {
+    if devices == 0 || devices & !REMOTE_DEVICE_MASK != 0 {
+        return Err(DesktopError::InvalidArgument(
+            "requested devices must be keyboard and/or pointer".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_granted_devices(requested: u32, granted: u32) -> Result<(), DesktopError> {
+    if granted == 0 || granted & !REMOTE_DEVICE_MASK != 0 || granted & !requested != 0 {
+        return Err(DesktopError::Transport(
+            "remote start returned invalid devices".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_object_path(path: &str) -> Result<(), DesktopError> {
+    if path.is_empty()
+        || path.len() > MAX_TOKEN_LEN
+        || !path.starts_with('/')
+        || path.ends_with('/')
+        || path.split('/').skip(1).any(|part| {
+            part.is_empty() || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+    {
+        return Err(DesktopError::Transport(
+            "remote session handle is malformed".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_finite(value: f64, name: &str) -> Result<(), DesktopError> {
+    if !value.is_finite() || value.abs() > MAX_REMOTE_DELTA {
+        return Err(DesktopError::InvalidArgument(format!(
+            "{name} must be finite and bounded"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_button(button: i32) -> Result<(), DesktopError> {
+    if !(REMOTE_BUTTON_MIN..=REMOTE_BUTTON_MAX).contains(&button) {
+        return Err(DesktopError::InvalidArgument(
+            "button must be positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_key_state(state: u32) -> Result<(), DesktopError> {
+    if state > 1 {
+        return Err(DesktopError::InvalidArgument("state must be 0 or 1".into()));
+    }
+    Ok(())
+}
+
+fn validate_axis(axis: u32) -> Result<(), DesktopError> {
+    if axis > 1 {
+        return Err(DesktopError::InvalidArgument("axis must be 0 or 1".into()));
+    }
+    Ok(())
+}
+
+fn validate_keysym(keysym: i32) -> Result<(), DesktopError> {
+    if !(0..=REMOTE_KEYSYM_MAX).contains(&keysym) {
+        return Err(DesktopError::InvalidArgument(
+            "keysym must be nonnegative".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_keycode(keycode: i32) -> Result<(), DesktopError> {
+    if !(0..=REMOTE_KEYCODE_MAX).contains(&keycode) {
+        return Err(DesktopError::InvalidArgument(
+            "keycode must be nonnegative".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn response_code_error(code: u32) -> DesktopError {
+    match code {
+        1 => DesktopError::Cancelled,
+        _ => DesktopError::PermissionDenied,
+    }
+}
+
+fn remote_create_body(handle_token: &str, session_token: &str) -> Vec<u8> {
+    let mut w = W::new();
+    w.dict_strs(&[
+        ("handle_token", handle_token),
+        ("session_handle_token", session_token),
+    ]);
+    w.b
+}
+
+fn remote_select_body(session_handle: &str, handle_token: &str, requested_devices: u32) -> Vec<u8> {
+    let mut w = W::new();
+    w.object(session_handle);
+    let mut entries = W::new();
+    entries.align(8);
+    entries.text("handle_token");
+    entries.sig("s");
+    entries.text(handle_token);
+    entries.align(8);
+    entries.text("types");
+    entries.sig("u");
+    entries.u32(requested_devices);
+    w.u32(entries.b.len() as u32);
+    w.align(8);
+    w.b.extend_from_slice(&entries.b);
+    w.b
+}
+
+fn remote_start_body(session_handle: &str, handle_token: &str, parent_window: &str) -> Vec<u8> {
+    let mut w = W::new();
+    w.object(session_handle);
+    w.text(parent_window);
+    w.dict_strs(&[("handle_token", handle_token)]);
+    w.b
 }
 
 // ---------------------------------------------------------------------------
@@ -324,11 +764,24 @@ impl W {
         self.b.extend_from_slice(&v.to_le_bytes());
     }
 
+    fn i32(&mut self, v: i32) {
+        self.u32(v as u32);
+    }
+
+    fn f64(&mut self, v: f64) {
+        self.align(8);
+        self.b.extend_from_slice(&v.to_le_bytes());
+    }
+
     fn text(&mut self, s: &str) {
         self.align(4);
         self.b.extend_from_slice(&(s.len() as u32).to_le_bytes());
         self.b.extend_from_slice(s.as_bytes());
         self.b.push(0);
+    }
+
+    fn object(&mut self, s: &str) {
+        self.text(s);
     }
 
     fn sig(&mut self, s: &str) {
@@ -347,6 +800,31 @@ impl W {
             e.sig("s");
             e.text(v);
         }
+        self.u32(e.b.len() as u32);
+        self.align(8);
+        self.b.extend_from_slice(&e.b);
+    }
+
+    #[allow(dead_code)]
+    fn dict_objects(&mut self, entries: &[(&str, &str)]) {
+        let mut e = W::new();
+        for (k, v) in entries {
+            e.align(8);
+            e.text(k);
+            e.sig("o");
+            e.object(v);
+        }
+        self.u32(e.b.len() as u32);
+        self.align(8);
+        self.b.extend_from_slice(&e.b);
+    }
+
+    fn dict_bool(&mut self, key: &str, value: bool) {
+        let mut e = W::new();
+        e.align(8);
+        e.text(key);
+        e.sig("b");
+        e.u32(u32::from(value));
         self.u32(e.b.len() as u32);
         self.align(8);
         self.b.extend_from_slice(&e.b);
@@ -511,6 +989,14 @@ impl<'a> R<'a> {
             "u" | "i" | "b" => {
                 self.u32().map(|_| ())?;
             }
+            "d" => {
+                self.align(8)?;
+                let end = self.p.checked_add(8).ok_or_else(Self::fail)?;
+                if end > self.d.len() {
+                    return Err(Self::fail());
+                }
+                self.p = end;
+            }
             "y" => {
                 self.u8().map(|_| ())?;
             }
@@ -564,6 +1050,7 @@ struct Msg {
     path: Option<String>,
     iface: Option<String>,
     member: Option<String>,
+    sender: Option<String>,
     err: Option<String>,
     sig: String,
     body: Vec<u8>,
@@ -589,6 +1076,7 @@ fn decode_message(buf: &[u8]) -> Result<Msg, DesktopError> {
         path: None,
         iface: None,
         member: None,
+        sender: None,
         err: None,
         sig: String::new(),
         body: buf[header_end..header_end + body_len].to_vec(),
@@ -603,14 +1091,43 @@ fn decode_message(buf: &[u8]) -> Result<Msg, DesktopError> {
             (F_MEMBER, "s") => msg.member = Some(r.text()?),
             (F_ERROR, "s") => msg.err = Some(r.text()?),
             (F_REPLY, "u") => msg.reply_to = Some(r.u32()?),
+            (F_SENDER, "s") => msg.sender = Some(r.text()?),
             (F_SIG, "g") => msg.sig = r.sigstr()?,
-            (F_DEST | F_SENDER, _) => {
+            (F_DEST, _) => {
                 r.skip_value(&vsig)?;
             }
             _ => return Err(DesktopError::Transport("unknown bus header field".into())),
         }
     }
     Ok(msg)
+}
+
+fn validate_response_signature(signature: &str) -> Result<(), DesktopError> {
+    if signature == "ua{sv}" {
+        Ok(())
+    } else {
+        Err(DesktopError::Transport(
+            "portal response returned wrong signature".into(),
+        ))
+    }
+}
+
+fn matching_response(
+    message: &Msg,
+    portal_sender: Option<&str>,
+    request_path: &str,
+) -> Result<bool, DesktopError> {
+    if message.ty == 4
+        && portal_sender == message.sender.as_deref()
+        && message.iface.as_deref() == Some(IFACE_REQUEST)
+        && message.member.as_deref() == Some("Response")
+        && message.path.as_deref() == Some(request_path)
+    {
+        validate_response_signature(&message.sig)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Decode a `Response(u, a{sv})` body into the response code plus the `uri`
@@ -629,16 +1146,66 @@ fn decode_response(body: &[u8]) -> Result<(u32, Option<String>), DesktopError> {
         r.align(8)?;
         let key = r.text()?;
         let vsig = r.sigstr()?;
-        if key == "uri" && vsig == "s" {
+        if key == "uri" {
+            if vsig != "s" || uri.is_some() {
+                return Err(R::fail());
+            }
             uri = Some(r.text()?);
         } else {
             r.skip_value(&vsig)?;
         }
     }
-    if r.p != end {
+    if r.p != end || end != r.d.len() {
         return Err(R::fail());
     }
     Ok((code, uri))
+}
+
+struct RemoteResponse {
+    code: u32,
+    session_handle: Option<String>,
+    devices: Option<u32>,
+}
+
+fn decode_remote_response(body: &[u8]) -> Result<RemoteResponse, DesktopError> {
+    let mut r = R::new(body);
+    let code = r.u32()?;
+    r.align(4)?;
+    let len = r.u32()? as usize;
+    let end = r.p.checked_add(len).ok_or_else(R::fail)?;
+    if end > r.d.len() {
+        return Err(R::fail());
+    }
+    let mut session_handle = None;
+    let mut devices = None;
+    while r.p < end {
+        r.align(8)?;
+        let key = r.text()?;
+        let vsig = r.sigstr()?;
+        match key.as_str() {
+            "session_handle" => {
+                if vsig != "s" || session_handle.is_some() {
+                    return Err(R::fail());
+                }
+                session_handle = Some(r.text()?);
+            }
+            "devices" => {
+                if vsig != "u" || devices.is_some() {
+                    return Err(R::fail());
+                }
+                devices = Some(r.u32()?);
+            }
+            _ => r.skip_value(&vsig)?,
+        }
+    }
+    if r.p != end || end != r.d.len() {
+        return Err(R::fail());
+    }
+    Ok(RemoteResponse {
+        code,
+        session_handle,
+        devices,
+    })
 }
 
 /// Map a D-Bus error name to a typed error. Matches on the last dotted
@@ -717,6 +1284,7 @@ struct Conn {
     s: Stream,
     serial: u32,
     pending: Vec<Msg>,
+    portal_sender: Option<String>,
 }
 
 fn uid_hex() -> String {
@@ -751,6 +1319,7 @@ impl Conn {
             s: stream,
             serial: 0,
             pending: Vec::new(),
+            portal_sender: None,
         };
         conn.auth()?;
         Ok(conn)
@@ -848,6 +1417,20 @@ impl Conn {
         body_sig: &str,
         body: &[u8],
     ) -> Result<Msg, DesktopError> {
+        self.transact_with_cancel(dest, path, iface, member, body_sig, body, &|| false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transact_with_cancel(
+        &mut self,
+        dest: &str,
+        path: &str,
+        iface: &str,
+        member: &str,
+        body_sig: &str,
+        body: &[u8],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Msg, DesktopError> {
         let serial = self.next_serial();
         let mut fields = vec![
             (F_DEST, FV::S(dest)),
@@ -861,8 +1444,14 @@ impl Conn {
         self.send_bytes(&encode_message(1, serial, &fields, body))?;
         let deadline = Instant::now() + RESPONSE_DEADLINE;
         loop {
+            if cancel() {
+                return Err(DesktopError::Cancelled);
+            }
             match self.read_message()? {
                 None => {
+                    if cancel() {
+                        return Err(DesktopError::Cancelled);
+                    }
                     if Instant::now() >= deadline {
                         return Err(DesktopError::Transport("portal call timed out".into()));
                     }
@@ -876,14 +1465,30 @@ impl Conn {
     }
 
     fn hello(&mut self) -> Result<(), DesktopError> {
-        let reply = self.transact(DBUS_DEST, DBUS_PATH, DBUS_IFACE, "Hello", "", &[])?;
+        self.hello_with_cancel(&|| false)
+    }
+
+    fn hello_with_cancel(&mut self, cancel: &dyn Fn() -> bool) -> Result<(), DesktopError> {
+        let reply =
+            self.transact_with_cancel(DBUS_DEST, DBUS_PATH, DBUS_IFACE, "Hello", "", &[], cancel)?;
         if reply.ty == 3 {
             return Err(map_dbus_error(reply.err.as_deref().unwrap_or("")));
         }
+        if reply.sig != "s" {
+            return Err(DesktopError::Transport(
+                "bus hello returned wrong signature".into(),
+            ));
+        }
         let mut r = R::new(&reply.body);
-        r.text()
-            .map(|_| ())
-            .map_err(|_| DesktopError::Transport("bus hello failed".into()))
+        let unique_name = r
+            .text()
+            .map_err(|_| DesktopError::Transport("bus hello failed".into()))?;
+        if !unique_name.starts_with(':') || r.p != r.d.len() {
+            return Err(DesktopError::Transport(
+                "bus hello returned malformed name".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Broad pre-call subscription to Request Response signals. The request
@@ -891,14 +1496,19 @@ impl Conn {
     /// client-side in [`Conn::wait_response`]; the connection is one-shot and
     /// closed after the call, so no `RemoveMatch` is needed.
     fn add_match(&mut self) -> Result<(), DesktopError> {
+        self.add_match_with_cancel(&|| false)
+    }
+
+    fn add_match_with_cancel(&mut self, cancel: &dyn Fn() -> bool) -> Result<(), DesktopError> {
         let rule = format!("type='signal',interface='{IFACE_REQUEST}',member='Response'");
-        let reply = self.transact(
+        let reply = self.transact_with_cancel(
             DBUS_DEST,
             DBUS_PATH,
             DBUS_IFACE,
             "AddMatch",
             "s",
             &rule_body(&rule),
+            cancel,
         )?;
         if reply.ty == 3 {
             return Err(DesktopError::Transport("signal subscription failed".into()));
@@ -913,13 +1523,57 @@ impl Conn {
         body_sig: &str,
         body: &[u8],
     ) -> Result<String, DesktopError> {
-        let reply = self.transact(PORTAL_DEST, PORTAL_PATH, iface, member, body_sig, body)?;
+        self.portal_request_with_cancel(iface, member, body_sig, body, &|| false)
+    }
+
+    fn portal_request_with_cancel(
+        &mut self,
+        iface: &str,
+        member: &str,
+        body_sig: &str,
+        body: &[u8],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<String, DesktopError> {
+        let reply = self.transact_with_cancel(
+            PORTAL_DEST,
+            PORTAL_PATH,
+            iface,
+            member,
+            body_sig,
+            body,
+            cancel,
+        )?;
         if reply.ty == 3 {
             return Err(map_dbus_error(reply.err.as_deref().unwrap_or("")));
         }
+        let sender = reply
+            .sender
+            .clone()
+            .ok_or_else(|| DesktopError::Transport("portal reply missing sender".into()))?;
+        if let Some(existing) = &self.portal_sender {
+            if existing != &sender {
+                return Err(DesktopError::Transport("portal sender changed".into()));
+            }
+        } else {
+            self.portal_sender = Some(sender);
+        }
+        if reply.sig != "o" {
+            return Err(DesktopError::Transport(
+                "portal returned wrong request signature".into(),
+            ));
+        }
         let mut r = R::new(&reply.body);
-        r.text()
-            .map_err(|_| DesktopError::Transport("portal returned no request".into()))
+        let request_path = r
+            .text()
+            .map_err(|_| DesktopError::Transport("portal returned no request".into()))?;
+        validate_object_path(&request_path)
+            .map_err(|_| DesktopError::Transport("portal returned malformed request".into()))?;
+        if r.p != r.d.len() {
+            return Err(DesktopError::Transport(
+                "portal returned trailing request data".into(),
+            ));
+        }
+        Ok(request_path)
     }
 
     fn wait_response(&mut self, req_path: &str) -> Result<(u32, Option<String>), DesktopError> {
@@ -927,11 +1581,7 @@ impl Conn {
         let mut idx = 0;
         loop {
             while idx < self.pending.len() {
-                if self.pending[idx].ty == 4
-                    && self.pending[idx].iface.as_deref() == Some(IFACE_REQUEST)
-                    && self.pending[idx].member.as_deref() == Some("Response")
-                    && self.pending[idx].path.as_deref() == Some(req_path)
-                {
+                if matching_response(&self.pending[idx], self.portal_sender.as_deref(), req_path)? {
                     let msg = self.pending.remove(idx);
                     return decode_response(&msg.body);
                 }
@@ -948,10 +1598,48 @@ impl Conn {
             }
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Tests: loopback fake session bus speaking real D-Bus wire framing.
+    fn wait_remote_response_with_cancel(
+        &mut self,
+        req_path: &str,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<RemoteResponse, DesktopError> {
+        let deadline = Instant::now() + RESPONSE_DEADLINE;
+        let mut idx = 0;
+        loop {
+            if cancel() {
+                return Err(DesktopError::Cancelled);
+            }
+            while idx < self.pending.len() {
+                if matching_response(&self.pending[idx], self.portal_sender.as_deref(), req_path)? {
+                    let msg = self.pending.remove(idx);
+                    return decode_remote_response(&msg.body);
+                }
+                idx += 1;
+            }
+            idx = self.pending.len();
+            match self.read_message()? {
+                None => {
+                    if cancel() {
+                        return Err(DesktopError::Cancelled);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(DesktopError::Transport("portal response timed out".into()));
+                    }
+                }
+                Some(msg) => self.pending.push(msg),
+            }
+        }
+    }
+
+    fn close_request(&mut self, request_path: &str) {
+        let _ = self.transact(PORTAL_DEST, request_path, IFACE_REQUEST, "Close", "", &[]);
+    }
+
+    fn close_session(&mut self, session_path: &str) {
+        let _ = self.transact(PORTAL_DEST, session_path, IFACE_SESSION, "Close", "", &[]);
+    }
+}
 // No network, no live portal, no credentials.
 // ---------------------------------------------------------------------------
 
@@ -1028,7 +1716,7 @@ mod tests {
     }
 
     fn reply_return(s: &mut TcpStream, to: u32, sig: &str, body: &[u8]) {
-        let mut fields = vec![(F_REPLY, FV::U(to))];
+        let mut fields = vec![(F_REPLY, FV::U(to)), (F_SENDER, FV::S(FAKE_PORTAL_SENDER))];
         if !sig.is_empty() {
             fields.push((F_SIG, FV::G(sig)));
         }
@@ -1057,11 +1745,13 @@ mod tests {
             (F_PATH, FV::O(req_path)),
             (F_IFACE, FV::S(IFACE_REQUEST)),
             (F_MEMBER, FV::S("Response")),
-            (F_SENDER, FV::S(PORTAL_DEST)),
+            (F_SENDER, FV::S(FAKE_PORTAL_SENDER)),
             (F_SIG, FV::G("ua{sv}")),
         ];
         fake_send(s, &encode_message(4, 1, &fields, &w.b));
     }
+
+    const FAKE_PORTAL_SENDER: &str = ":1.42";
 
     fn fake_read_line(s: &mut TcpStream) -> String {
         let mut line = Vec::new();
@@ -1535,8 +2225,357 @@ mod tests {
     }
 
     #[test]
+    fn response_decode_rejects_wrong_signatures_and_mixed_duplicates() {
+        let mut wrong_uri = W::new();
+        wrong_uri.u32(0);
+        wrong_uri.dict_bool("uri", true);
+        assert!(decode_response(&wrong_uri.b).is_err());
+
+        let mut mixed_entries = W::new();
+        mixed_entries.align(8);
+        mixed_entries.text("session_handle");
+        mixed_entries.sig("b");
+        mixed_entries.u32(1);
+        mixed_entries.align(8);
+        mixed_entries.text("session_handle");
+        mixed_entries.sig("s");
+        mixed_entries.text("/org/freedesktop/portal/desktop/session/one");
+        let mut mixed = W::new();
+        mixed.u32(0);
+        mixed.u32(mixed_entries.b.len() as u32);
+        mixed.align(8);
+        mixed.b.extend_from_slice(&mixed_entries.b);
+        assert!(decode_remote_response(&mixed.b).is_err());
+    }
+
+    #[test]
+    fn response_signature_must_be_exact() {
+        assert!(validate_response_signature("ua{sv}").is_ok());
+        assert!(validate_response_signature("u").is_err());
+        assert!(validate_response_signature("ua{sv} ").is_err());
+    }
+
+    #[test]
+    fn response_correlation_rejects_wrong_outer_signature() {
+        let message = Msg {
+            ty: 4,
+            serial: 1,
+            reply_to: None,
+            path: Some("/org/freedesktop/portal/desktop/request/one".into()),
+            iface: Some(IFACE_REQUEST.into()),
+            member: Some("Response".into()),
+            sender: Some(":1.42".into()),
+            err: None,
+            sig: "u".into(),
+            body: Vec::new(),
+        };
+        assert!(matching_response(
+            &message,
+            Some(":1.42"),
+            "/org/freedesktop/portal/desktop/request/one"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn non_png_payload_returns_unknown_format_with_bytes() {
         let (w, h, f) = png_dims(b"not an image");
         assert_eq!((w, h, f), (0, 0, "unknown"));
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+
+    const FAKE_PORTAL_SENDER: &str = ":1.42";
+
+    fn fake_read_line(s: &mut TcpStream) -> String {
+        let mut line = Vec::new();
+        let mut b = [0u8; 1];
+        loop {
+            s.read_exact(&mut b).unwrap();
+            line.push(b[0]);
+            if b[0] == b'\n' {
+                return String::from_utf8(line).unwrap();
+            }
+        }
+    }
+
+    fn fake_read_message(s: &mut TcpStream) -> Msg {
+        let mut head = [0u8; 16];
+        s.read_exact(&mut head).unwrap();
+        let body_len = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
+        let fields_len = u32::from_le_bytes(head[12..16].try_into().unwrap()) as usize;
+        let fields_end = 16 + fields_len;
+        let header_end = fields_end + ((8 - (fields_end % 8)) % 8);
+        let mut rest = vec![0u8; header_end - 16 + body_len];
+        s.read_exact(&mut rest).unwrap();
+        let mut buf = head.to_vec();
+        buf.extend_from_slice(&rest);
+        decode_message(&buf).unwrap()
+    }
+
+    fn reply_return(s: &mut TcpStream, to: u32, sig: &str, body: &[u8]) {
+        let mut fields = vec![(F_REPLY, FV::U(to)), (F_SENDER, FV::S(FAKE_PORTAL_SENDER))];
+        if !sig.is_empty() {
+            fields.push((F_SIG, FV::G(sig)));
+        }
+        s.write_all(&encode_message(2, 1, &fields, body)).unwrap();
+    }
+
+    fn send_response(
+        s: &mut TcpStream,
+        req_path: &str,
+        code: u32,
+        result: Option<(&str, &str, &str)>,
+    ) {
+        let mut w = W::new();
+        w.u32(code);
+        match result {
+            Some((key, "s", value)) => w.dict_strs(&[(key, value)]),
+            Some((key, "o", value)) => w.dict_objects(&[(key, value)]),
+            Some((key, sig, value)) if sig == "u" => {
+                let mut e = W::new();
+                e.align(8);
+                e.text(key);
+                e.sig(sig);
+                e.u32(value.parse().unwrap());
+                w.u32(e.b.len() as u32);
+                w.align(8);
+                w.b.extend_from_slice(&e.b);
+            }
+            _ => w.dict_strs(&[]),
+        }
+        let fields = vec![
+            (F_PATH, FV::O(req_path)),
+            (F_IFACE, FV::S(IFACE_REQUEST)),
+            (F_MEMBER, FV::S("Response")),
+            (F_SENDER, FV::S(FAKE_PORTAL_SENDER)),
+            (F_SIG, FV::G("ua{sv}")),
+        ];
+        s.write_all(&encode_message(4, 1, &fields, &w.b)).unwrap();
+    }
+
+    fn spawn_remote_fake() -> (u16, mpsc::Receiver<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut nul = [0u8; 1];
+            s.read_exact(&mut nul).unwrap();
+            assert_eq!(nul[0], 0);
+            assert!(fake_read_line(&mut s).starts_with("AUTH EXTERNAL"));
+            s.write_all(b"OK 00000000000000000000000000000000\r\n")
+                .unwrap();
+            assert!(fake_read_line(&mut s).starts_with("BEGIN"));
+            let mut calls = Vec::new();
+            loop {
+                let msg = fake_read_message(&mut s);
+                let member = msg.member.clone().unwrap();
+                calls.push(format!(
+                    "{member}:{}:{}",
+                    msg.iface.as_deref().unwrap(),
+                    msg.sig
+                ));
+                match member.as_str() {
+                    "Hello" => {
+                        let mut w = W::new();
+                        w.text(":1.1");
+                        reply_return(&mut s, msg.serial, "s", &w.b);
+                    }
+                    "AddMatch" => reply_return(&mut s, msg.serial, "", &[]),
+                    "CreateSession" => {
+                        assert!(msg
+                            .body
+                            .windows(b"handle_token".len())
+                            .any(|window| window == b"handle_token"));
+                        assert!(msg
+                            .body
+                            .windows(b"session_handle_token".len())
+                            .any(|window| window == b"session_handle_token"));
+                        let mut w = W::new();
+                        w.text("/request/create");
+                        reply_return(&mut s, msg.serial, "o", &w.b);
+                        send_response(
+                            &mut s,
+                            "/request/create",
+                            0,
+                            Some((
+                                "session_handle",
+                                "s",
+                                "/org/freedesktop/portal/desktop/session/abc",
+                            )),
+                        );
+                    }
+                    "SelectDevices" => {
+                        let mut w = W::new();
+                        w.text("/request/select");
+                        reply_return(&mut s, msg.serial, "o", &w.b);
+                        send_response(&mut s, "/request/select", 0, None);
+                    }
+                    "Start" => {
+                        assert!(msg
+                            .body
+                            .windows(b"handle_token".len())
+                            .any(|window| window == b"handle_token"));
+                        let mut w = W::new();
+                        w.text("/request/start");
+                        reply_return(&mut s, msg.serial, "o", &w.b);
+                        send_response(&mut s, "/request/start", 0, Some(("devices", "u", "3")));
+                        tx.send(calls.clone()).unwrap();
+                    }
+                    "NotifyPointerMotion"
+                    | "NotifyPointerButton"
+                    | "NotifyPointerAxis"
+                    | "NotifyPointerAxisDiscrete"
+                    | "NotifyKeyboardKeysym"
+                    | "NotifyKeyboardKeycode" => reply_return(&mut s, msg.serial, "", &[]),
+                    "Close" => {
+                        reply_return(&mut s, msg.serial, "", &[]);
+                        tx.send(calls).unwrap();
+                        return;
+                    }
+                    other => panic!("unexpected method {other}"),
+                }
+            }
+        });
+        (port, rx)
+    }
+
+    #[test]
+    fn remote_response_rejects_duplicate_and_trailing_results() {
+        let mut duplicate = W::new();
+        duplicate.u32(0);
+        duplicate.dict_strs(&[
+            (
+                "session_handle",
+                "/org/freedesktop/portal/desktop/session/one",
+            ),
+            (
+                "session_handle",
+                "/org/freedesktop/portal/desktop/session/two",
+            ),
+        ]);
+        assert!(decode_remote_response(&duplicate.b).is_err());
+
+        let mut trailing = W::new();
+        trailing.u32(0);
+        trailing.dict_strs(&[]);
+        trailing.b.push(0);
+        assert!(decode_remote_response(&trailing.b).is_err());
+    }
+
+    #[test]
+    fn remote_input_bounds_reject_before_bus_input() {
+        let mut session = RemoteDesktopSession {
+            conn: None,
+            session_handle: "/session".into(),
+            granted_devices: REMOTE_DEVICE_KEYBOARD | REMOTE_DEVICE_POINTER,
+            stopped: false,
+        };
+        assert!(matches!(
+            session.pointer_motion(MAX_REMOTE_DELTA + 1.0, 0.0),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            session.pointer_axis_discrete(0, MAX_REMOTE_STEPS + 1),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            session.pointer_button(REMOTE_BUTTON_MAX + 1, 1),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            session.keyboard_keysym(REMOTE_KEYSYM_MAX + 1, 1),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            session.keyboard_keycode(REMOTE_KEYCODE_MAX + 1, 1),
+            Err(DesktopError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn remote_response_decodes_string_session_handle() {
+        let mut w = W::new();
+        w.u32(0);
+        w.dict_strs(&[(
+            "session_handle",
+            "/org/freedesktop/portal/desktop/session/abc",
+        )]);
+        let result = decode_remote_response(&w.b).unwrap();
+        assert_eq!(
+            result.session_handle.as_deref(),
+            Some("/org/freedesktop/portal/desktop/session/abc")
+        );
+    }
+
+    #[test]
+    fn remote_start_runs_ordered_lifecycle_and_grants_requested_devices() {
+        let (port, calls) = spawn_remote_fake();
+        let mut session = DesktopPortal::start_remote_desktop_via(
+            &BusEndpoint::loopback_tcp(port),
+            "handle",
+            "session",
+            "parent-window",
+            REMOTE_DEVICE_KEYBOARD | REMOTE_DEVICE_POINTER,
+        )
+        .unwrap();
+        assert_eq!(session.granted_devices(), 3);
+        assert_eq!(
+            calls.recv_timeout(Duration::from_secs(5)).unwrap(),
+            vec![
+                "Hello:org.freedesktop.DBus:".to_string(),
+                "AddMatch:org.freedesktop.DBus:s".to_string(),
+                "CreateSession:org.freedesktop.portal.RemoteDesktop:a{sv}".to_string(),
+                "SelectDevices:org.freedesktop.portal.RemoteDesktop:oa{sv}".to_string(),
+                "Start:org.freedesktop.portal.RemoteDesktop:osa{sv}".to_string(),
+            ]
+        );
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn remote_input_uses_exact_notify_signatures_and_stop_is_idempotent() {
+        let (port, calls) = spawn_remote_fake();
+        let mut session = DesktopPortal::start_remote_desktop_via(
+            &BusEndpoint::loopback_tcp(port),
+            "handle",
+            "session",
+            "parent-window",
+            REMOTE_DEVICE_KEYBOARD | REMOTE_DEVICE_POINTER,
+        )
+        .unwrap();
+        let _ = calls.recv_timeout(Duration::from_secs(5)).unwrap();
+        session.pointer_motion(1.25, -2.5).unwrap();
+        session.pointer_button(0x110, 1).unwrap();
+        session.pointer_axis(0.0, 1.0, true).unwrap();
+        session.pointer_axis_discrete(0, -2).unwrap();
+        session.keyboard_keysym(0x41, 1).unwrap();
+        session.keyboard_keycode(30, 0).unwrap();
+        session.stop().unwrap();
+        session.stop().unwrap();
+        let calls = calls.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            &calls[5..],
+            [
+                "NotifyPointerMotion:org.freedesktop.portal.RemoteDesktop:oa{sv}dd",
+                "NotifyPointerButton:org.freedesktop.portal.RemoteDesktop:oa{sv}iu",
+                "NotifyPointerAxis:org.freedesktop.portal.RemoteDesktop:oa{sv}dd",
+                "NotifyPointerAxisDiscrete:org.freedesktop.portal.RemoteDesktop:oa{sv}ui",
+                "NotifyKeyboardKeysym:org.freedesktop.portal.RemoteDesktop:oa{sv}iu",
+                "NotifyKeyboardKeycode:org.freedesktop.portal.RemoteDesktop:oa{sv}iu",
+                "Close:org.freedesktop.portal.Session:",
+            ]
+        );
+        assert!(matches!(
+            session.pointer_motion(0.0, 0.0),
+            Err(DesktopError::InvalidArgument(_))
+        ));
     }
 }

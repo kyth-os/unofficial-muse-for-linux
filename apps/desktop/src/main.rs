@@ -3,6 +3,8 @@ use gtk4 as gtk;
 mod account_login;
 mod account_ui;
 mod calendar_ui;
+pub mod computer_control;
+mod computer_control_ui;
 mod desktop_ui;
 mod files_write_ui;
 mod local_host;
@@ -288,6 +290,12 @@ fn build_ui(app: &gtk::Application) {
         "Portal screenshots and URL opening",
     );
     sidebar.append(&desktop_nav);
+    let computer_control_nav = nav_button(
+        "input-mouse-symbolic",
+        "Computer Control",
+        "Explicit portal-gated pointer and keyboard test actions",
+    );
+    sidebar.append(&computer_control_nav);
 
     let advanced_heading = gtk::Label::new(Some("ADVANCED"));
     advanced_heading.add_css_class("nav-section-label");
@@ -343,14 +351,19 @@ fn build_ui(app: &gtk::Application) {
     stack.add_named(&calendar_page.root, Some("calendar"));
     let desktop_page: desktop_ui::DesktopPage = desktop_ui::build();
     stack.add_named(&desktop_page.root, Some("desktop"));
+    let computer_control_page: computer_control_ui::ComputerControlPage =
+        computer_control_ui::build();
+    stack.add_named(&computer_control_page.root, Some("computer-control"));
     let tasks_page: tasks_ui::TasksPage = tasks_ui::build();
     stack.add_named(&tasks_page.root, Some("tasks"));
     let cancel_login = Rc::clone(&account_page.cancel_login);
     let stop_host = host_page.shutdown.clone();
     let stop_calendar = calendar_page.shutdown.clone();
+    let stop_computer_control = computer_control_page.shutdown.clone();
     window.connect_close_request(move |_| {
         stop_host();
         stop_calendar();
+        stop_computer_control();
         cancel_login();
         gtk::glib::Propagation::Proceed
     });
@@ -889,6 +902,7 @@ fn build_ui(app: &gtk::Application) {
         (&mail_nav, "mail"),
         (&calendar_nav, "calendar"),
         (&desktop_nav, "desktop"),
+        (&computer_control_nav, "computer-control"),
         (&tasks_nav, "tasks"),
         (&developer_nav, "developer"),
     ];
@@ -901,6 +915,7 @@ fn build_ui(app: &gtk::Application) {
         let mail = mail_nav.clone();
         let calendar = calendar_nav.clone();
         let desktop = desktop_nav.clone();
+        let computer_control = computer_control_nav.clone();
         let tasks = tasks_nav.clone();
         let developer = developer_nav.clone();
         button.connect_clicked(move |_| {
@@ -914,6 +929,7 @@ fn build_ui(app: &gtk::Application) {
                     (&mail, "mail"),
                     (&calendar, "calendar"),
                     (&desktop, "desktop"),
+                    (&computer_control, "computer-control"),
                     (&tasks, "tasks"),
                     (&developer, "developer"),
                 ],
@@ -930,6 +946,7 @@ fn build_ui(app: &gtk::Application) {
     let mail_for_open_files = mail_nav.clone();
     let calendar_for_open_files = calendar_nav.clone();
     let desktop_for_open_files = desktop_nav.clone();
+    let computer_control_for_open_files = computer_control_nav.clone();
     let tasks_for_open_files = tasks_nav.clone();
     let developer_for_open_files = developer_nav.clone();
     open_files.connect_clicked(move |_| {
@@ -943,6 +960,7 @@ fn build_ui(app: &gtk::Application) {
                 (&mail_for_open_files, "mail"),
                 (&calendar_for_open_files, "calendar"),
                 (&desktop_for_open_files, "desktop"),
+                (&computer_control_for_open_files, "computer-control"),
                 (&tasks_for_open_files, "tasks"),
                 (&developer_for_open_files, "developer"),
             ],
@@ -958,6 +976,7 @@ fn build_ui(app: &gtk::Application) {
     let mail_for_settings = mail_nav.clone();
     let calendar_for_settings = calendar_nav.clone();
     let desktop_for_settings = desktop_nav.clone();
+    let computer_control_for_settings = computer_control_nav.clone();
     let tasks_for_settings = tasks_nav.clone();
     let developer_for_settings = developer_nav.clone();
     let setup_for_settings = account_page.settings.clone();
@@ -972,6 +991,7 @@ fn build_ui(app: &gtk::Application) {
                 (&mail_for_settings, "mail"),
                 (&calendar_for_settings, "calendar"),
                 (&desktop_for_settings, "desktop"),
+                (&computer_control_for_settings, "computer-control"),
                 (&tasks_for_settings, "tasks"),
                 (&developer_for_settings, "developer"),
             ],
@@ -1026,6 +1046,7 @@ fn select_page(
         "mail" => "Mail",
         "calendar" => "Calendar",
         "desktop" => "Desktop",
+        "computer-control" => "Computer Control",
         "tasks" => "Reminders",
         "developer" => "Developer API",
         _ => "Unknown page",
