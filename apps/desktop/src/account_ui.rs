@@ -569,7 +569,11 @@ mod native {
     }
 
     #[cfg(unix)]
-    fn check_directory_fd(fd: RawFd, require_current_owner: bool) -> Result<(), String> {
+    fn check_directory_fd(
+        fd: RawFd,
+        require_current_owner: bool,
+        require_private_mode: bool,
+    ) -> Result<(), String> {
         // SAFETY: zeroed is valid for libc::stat and fstat initializes every field.
         let mut metadata = unsafe { std::mem::zeroed::<libc::stat>() };
         // SAFETY: fd is borrowed for the duration of this fstat call and metadata is writable.
@@ -580,6 +584,8 @@ mod native {
             return Err("persistent config path is not a directory".into());
         }
         if metadata.st_mode & 0o022 != 0
+            || (require_private_mode && metadata.st_mode & 0o077 != 0)
+            || (!require_current_owner && metadata.st_uid != current_uid() && metadata.st_uid != 0)
             || (require_current_owner && metadata.st_uid != current_uid())
         {
             return Err("persistent config directory is not privately owned".into());
@@ -648,7 +654,7 @@ mod native {
                 close_fd(current);
                 return Err("persistent config directory unavailable".into());
             }
-            if let Err(error) = check_directory_fd(next, false) {
+            if let Err(error) = check_directory_fd(next, false, false) {
                 close_fd(next);
                 close_fd(current);
                 return Err(error);
@@ -656,7 +662,7 @@ mod native {
             close_fd(current);
             current = next;
         }
-        if let Err(error) = check_directory_fd(current, true) {
+        if let Err(error) = check_directory_fd(current, true, false) {
             close_fd(current);
             return Err(error);
         }
@@ -700,7 +706,7 @@ mod native {
         if child < 0 {
             return Err("persistent config directory unavailable".into());
         }
-        if let Err(error) = check_directory_fd(child, true) {
+        if let Err(error) = check_directory_fd(child, true, true) {
             close_fd(child);
             return Err(error);
         }
@@ -2012,7 +2018,7 @@ print(json.dumps({'ok':True,'data':data}))
             let app = open_child_directory(root, "unofficial-muse-for-linux", true).unwrap();
             close_fd(app);
             close_fd(root);
-            fs::set_permissions(&app_path, fs::Permissions::from_mode(0o770)).unwrap();
+            fs::set_permissions(&app_path, fs::Permissions::from_mode(0o750)).unwrap();
             let root = open_directory_path(&root_path, false).unwrap();
             assert!(open_child_directory(root, "unofficial-muse-for-linux", false).is_err());
             close_fd(root);
